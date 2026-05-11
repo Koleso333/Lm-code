@@ -374,6 +374,10 @@ const PRESETS = {
       return text;
     },
 
+    _isStreaming(el) {
+      return !!el.querySelector(".animate-spin");
+    },
+
     highlightResponse() {
       log("highlightResponse: scanning .bg-surface-primary");
       let found = 0, sent = 0;
@@ -384,26 +388,30 @@ const PRESETS = {
         if (prose.closest(".bg-surface-raised")) continue;
         found++;
 
+        // Primary check: spinner present = still generating
+        if (this._isStreaming(el)) {
+          log("highlightResponse: skipped (still streaming, spinner active)");
+          continue;
+        }
+
         const text = this._serializeProse(prose);
         console.log("[lm-addition] serialized text, len=", (text || "").length, "first100=", (text || "").substring(0, 100).replace(/\n/g, "\\n"));
         if (!text) continue;
 
-        // Text stability: only send when text hasn't changed between scans.
-        // Prevents premature AI_RESPONSE when the AI lags mid-generation.
+        // Fallback stability check: wait for text to settle after spinner disappears
         if (text !== prose.dataset.lmStableText) {
           prose.dataset.lmStableText = text;
-          log(`highlightResponse: text changed, waiting for stability (len=${text.length})`);
-          // Schedule a follow-up scan in case no more DOM mutations occur
+          log(`highlightResponse: text changed post-stream, waiting for stability (len=${text.length})`);
           if (prose._lmStabilityTimer) clearTimeout(prose._lmStabilityTimer);
           prose._lmStabilityTimer = setTimeout(() => {
             prose._lmStabilityTimer = null;
             log("highlightResponse: stability timer fired, re-scanning");
             scanNewBlocks();
-          }, 2000);
+          }, 5000);
           continue;
         }
 
-        // Text is stable — response is complete
+        // Text is stable and spinner is gone — response is complete
         if (prose._lmStabilityTimer) {
           clearTimeout(prose._lmStabilityTimer);
           prose._lmStabilityTimer = null;
