@@ -1,0 +1,13 @@
+.lm-highlight-api {
+  background-color: rgba(255, 255, 255, 0.3) !important;
+  border-radius: 3px;
+  padding: 1px 3px;
+  display: inline !important;
+}
+
+.lm-highlight-response {
+  background-color: rgba(0, 0, 255, 0.12) !important;
+  border-radius: 3px;
+  padding: 1px 3px;
+  display: inline !important;
+}

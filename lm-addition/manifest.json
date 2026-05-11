@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "lm-addition",
+  "version": "1.0.0",
+  "description": "Автоматически находит команды lm-api на страницах и выполняет их",
+  "permissions": ["storage", "activeTab", "alarms"],
+  "host_permissions": ["<all_urls>", "http://127.0.0.1:11856/*"],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
