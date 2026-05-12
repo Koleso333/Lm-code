@@ -6,6 +6,7 @@ import sys
 from commands.file_ops import (
     cmd_filelist,
     cmd_readfile,
+    cmd_readlines,
     cmd_writefile,
     cmd_appendfile,
     cmd_deletefile,
@@ -13,7 +14,6 @@ from commands.file_ops import (
 from commands.run_cmd import cmd_run
 from commands.search_cmd import cmd_search
 from commands.edit_ops import cmd_editlines, cmd_edit
-from config import get_config
 from parser import parse_command, ParseError, extract_commands, KNOWN_COMMANDS
 from responses import build_error
 
@@ -21,6 +21,7 @@ from responses import build_error
 DISPATCH = {
     "FILELIST": lambda cmd: cmd_filelist(cmd.arg),
     "READFILE": lambda cmd: cmd_readfile(cmd.arg),
+    "READLINES": lambda cmd: cmd_readlines(cmd.arg),
     "WRITEFILE": lambda cmd: cmd_writefile(cmd.arg, cmd.content),
     "APPENDFILE": lambda cmd: cmd_appendfile(cmd.arg, cmd.content),
     "DELETEFILE": lambda cmd: cmd_deletefile(cmd.arg),
@@ -29,18 +30,6 @@ DISPATCH = {
     "EDITLINES": lambda cmd: cmd_editlines(cmd.arg, cmd.expect_hash, cmd.content),
     "EDIT": lambda cmd: cmd_edit(cmd.arg, cmd.old_content, cmd.new_content),
 }
-
-
-def _copy_to_clipboard(text: str) -> None:
-    try:
-        p = subprocess.Popen(
-            ["clip.exe"],
-            stdin=subprocess.PIPE,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-        p.communicate(input=text.encode("utf-16-le"))
-    except OSError:
-        pass
 
 
 def _read_line(stdin) -> str | None:
@@ -57,9 +46,6 @@ def _emit(output: str) -> None:
         sys.stdout.buffer.write(output.encode("utf-8", errors="replace"))
         sys.stdout.buffer.write(b"\n")
         sys.stdout.buffer.flush()
-    cfg = get_config()
-    if cfg.get("auto_copy_to_clipboard"):
-        _copy_to_clipboard(output)
 
 
 def main() -> None:

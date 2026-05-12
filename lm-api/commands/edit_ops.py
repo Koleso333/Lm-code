@@ -49,7 +49,15 @@ def cmd_editlines(arg: str, expect_hash: Optional[str], content: Optional[str]) 
         })
 
     display_path = normalize_display(path_str)
-    target = resolve_path(path_str)
+    try:
+        target = resolve_path(path_str)
+    except ValueError:
+        return build_error({
+            "command": "EDITLINES",
+            "path": display_path,
+            "error_type": "InvalidArguments",
+            "error_message": "Path must be absolute",
+        })
 
     if not target.exists():
         return build_error({
@@ -166,7 +174,15 @@ def cmd_edit(arg: str, old_content: Optional[str], new_content: Optional[str]) -
         })
 
     display_path = normalize_display(arg)
-    target = resolve_path(arg)
+    try:
+        target = resolve_path(arg)
+    except ValueError:
+        return build_error({
+            "command": "EDIT",
+            "path": display_path,
+            "error_type": "InvalidArguments",
+            "error_message": "Path must be absolute",
+        })
 
     if not target.exists():
         return build_error({

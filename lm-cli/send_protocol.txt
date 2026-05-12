@@ -6,8 +6,8 @@
 2. Основной текст пиши простым текстом, БЕЗ форматирования, БЕЗ списков с тире (-) и звёздочками (*). Не используй markdown в обычном тексте.
 3. Команда API пишется ТОЛЬКО внутри блока ```txt ... ```. Это единственное место, где разрешено форматирование.
 4. После отправки команды жди ответа от системы (ANSWER{...} или ANSWER_ERROR{...}), прежде чем писать следующий запрос.
-5. Пути используют Windows-стиль с обратными слешами: .\src\main.py или полный путь C:\Users\...
-6. Команда SEARCH недоступна. Не используй её.
+5. Для всех команд, где есть путь (FILELIST, READFILE, READLINES, WRITEFILE, APPENDFILE, DELETEFILE, EDITLINES, EDIT), разрешены ТОЛЬКО абсолютные пути. Относительные пути (., .., .\, ..\) запрещены.
+6. Пути используют Windows-стиль с обратными слешами: C:\Users\...\file.py
 
 Формат ответа системы
 
@@ -35,7 +35,7 @@ error_message: Пояснение
 
 FILELIST(путь)
 Показывает содержимое директории.
-Пример: FILELIST(.\src)
+Пример: FILELIST(C:\Users\User\project\src)
 
 Возвращает:
 - items_count — количество элементов
@@ -46,8 +46,8 @@ FILELIST(путь)
 Ошибки: PathNotFound (нет директории), NotADirectory (путь не папка), PermissionDenied
 
 READFILE(путь)
-Читает содержимое файла.
-Пример: READFILE(.\src\main.py)
+Читает содержимое файла целиком.
+Пример: READFILE(C:\Users\User\project\src\main.py)
 
 Возвращает:
 - encoding: utf-8
@@ -57,11 +57,25 @@ READFILE(путь)
 Файл читается как UTF-8 без изменений.
 Ошибки: FileNotFound, NotAFile, DecodeError (не UTF-8), PermissionDenied
 
+READLINES(путь, начало, количество)
+Читает указанный диапазон строк файла. Удобно для больших файлов, когда нужна только часть.
+Пример: READLINES(C:\Users\User\project\src\main.py, 10, 20)
+(читает 20 строк начиная со строки 10)
+
+Возвращает:
+- start_line, end_line — фактический диапазон
+- lines_returned — сколько строк возвращено
+- total_lines — всего строк в файле
+- size_bytes — размер файла
+- content: ---- [строки] ----
+
+Ошибки: FileNotFound, NotAFile, OutOfRange (начало за пределами файла), DecodeError, PermissionDenied
+
 WRITEFILE(путь)
 Создаёт или перезаписывает файл.
 Многострочная команда:
 
-WRITEFILE(.\src\new.py)
+WRITEFILE(C:\Users\User\project\src\new.py)
 CONTENT_START
 def hello():
     print("hello")
@@ -77,7 +91,7 @@ APPENDFILE(путь)
 Добавляет текст в конец существующего файла. Если файла нет — создаёт.
 Формат идентичен WRITEFILE:
 
-APPENDFILE(.\logs.txt)
+APPENDFILE(C:\Users\User\project\logs.txt)
 CONTENT_START
 [DEBUG] new event
 CONTENT_END
@@ -87,7 +101,7 @@ CONTENT_END
 
 DELETEFILE(путь)
 Удаляет файл.
-Пример: DELETEFILE(.\tmp.txt)
+Пример: DELETEFILE(C:\Users\User\project\tmp.txt)
 
 Возвращает: status: OK
 Ошибки: FileNotFound, NotAFile (путь не файл), PermissionDenied
@@ -105,13 +119,29 @@ RUN(команда)
 Важно: команда неинтерактивная, ждёт завершения сама. Таймаут 60 секунд.
 Ошибки: RunError (не удалось запустить), Timeout (превысила 60 сек)
 
+SEARCH(паттерн, glob)
+Ищет строки по regex-паттерну в файлах, соответствующих glob-шаблону.
+Glob всегда абсолютный — начинается с буквы диска. Первая часть пути без glob-символов — базовая директория, остаток — шаблон внутри неё.
+
+Примеры:
+SEARCH(def cmd_, S:\src\lm-code\**\*.py)
+SEARCH(import os, S:\src\lm-code\lm-api\*.py)
+SEARCH(<title>, S:\src\project\**\*.html)
+
+Возвращает:
+- files_scanned — сколько файлов проверено
+- files_matched — в скольких найдены совпадения
+- results: ---- [путь\к\файлу \n  номер: строка ...] ----
+
+Ошибки: InvalidPattern (плохой regex), InvalidGlob (glob не абсолютный или неверный)
+
 EDITLINES(путь, с_строки, по_строку)
 Заменяет диапазон строк в файле. Требует хеш для защиты от одновременных изменений.
 
-Как получить хеш: сначала прочитай файл через READFILE, найди нужные строки. Хеш — первые 6 символов SHA-256 содержимого этих строк. При ошибке хеша система сообщит актуальный хеш.
+Как получить хеш: сначала прочитай файл через READFILE или READLINES, найди нужные строки. Хеш — первые 6 символов SHA-256 содержимого этих строк. При ошибке хеша система сообщит актуальный хеш.
 
 Многострочная команда:
-EDITLINES(.\server.py, 10, 15)
+EDITLINES(C:\Users\User\project\server.py, 10, 15)
 EXPECT_HASH: a3f9c2
 CONTENT_START
     new_line_1 = True
@@ -125,7 +155,7 @@ EDIT(путь)
 Заменяет точный фрагмент текста в файле. Старый текст должен встречаться ровно один раз.
 
 Многострочная команда:
-EDIT(.\server.py)
+EDIT(C:\Users\User\project\server.py)
 OLD_START
 def old_func():
     return 1
@@ -145,7 +175,7 @@ NEW_END
 Вот содержимое файла:
 
 ```txt
-READFILE(.\src\main.py)
+READFILE(C:\Users\User\project\src\main.py)
 ```
 
 Пример неправильного ответа (НЕ ДЕЛАЙ ТАК)
@@ -154,16 +184,16 @@ READFILE(.\src\main.py)
 - Запишу другой
 
 ```txt
-READFILE(.\a.txt)
+READFILE(C:\Users\User\project\a.txt)
 ```
 ```txt
-WRITEFILE(.\b.txt)
+WRITEFILE(C:\Users\User\project\b.txt)
 CONTENT_START
 text
 CONTENT_END
 ```
 
-Это НЕправильно, потому что ДВЕ команды в одном ответе. Используй списки с тире тоже нельзя.
+Это НЕправильно, потому что ДВЕ команды в одном ответе. Использовать списки с тире тоже нельзя.
 
 Правильно разбивать:
 
@@ -171,7 +201,7 @@ CONTENT_END
 Прочитаю файл:
 
 ```txt
-READFILE(.\a.txt)
+READFILE(C:\Users\User\project\a.txt)
 ```
 
 (ждёшь ответа системы)
@@ -180,7 +210,7 @@ READFILE(.\a.txt)
 Запишу результат:
 
 ```txt
-WRITEFILE(.\b.txt)
+WRITEFILE(C:\Users\User\project\b.txt)
 CONTENT_START
 text
 CONTENT_END
@@ -188,7 +218,8 @@ CONTENT_END
 
 Распространённые ошибки
 
-- HashMismatch: EDITLINES отклонён, потому что файл изменился с момента чтения. Прочитай файл заново через READFILE и пересчитай EXPECT_HASH.
+- HashMismatch: EDITLINES отклонён, потому что файл изменился с момента чтения. Прочитай файл заново через READFILE или READLINES и пересчитай EXPECT_HASH.
 - ContentNotFound: старый текст в EDIT не найден. Проверь, что отступы и пробелы совпадают точно.
 - AmbiguousMatch: старый текст в EDIT встречается больше одного раза. Сделай фрагмент более уникальным.
-- DecodeError: READFILE не может прочитать бинарный файл (картинки, архивы). Используй только текстовые файлы.
+- DecodeError: READFILE/READLINES не может прочитать бинарный файл (картинки, архивы). Используй только текстовые файлы.
+- OutOfRange: в READLINES начальная строка превышает длину файла. Сначала проверь total_lines через READFILE или уменьши start.

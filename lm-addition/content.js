@@ -19,6 +19,10 @@ function connectPort() {
 
     _port.onMessage.addListener((msg) => {
       if (msg.type === "INJECT") {
+        if (!isEnabled) {
+          console.log("[lm-addition] INJECT ignored (disabled)");
+          return;
+        }
         console.log("[lm-addition] INJECT via port, text len:", (msg.text || "").length);
         if (preset && preset.inject) {
           preset.inject(msg.text);
@@ -39,6 +43,10 @@ function connectPort() {
 connectPort();
 
 function sendAiResponse(text, model) {
+  if (!isEnabled) {
+    console.log("[lm-addition] sendAiResponse ignored (disabled)");
+    return;
+  }
   console.log("[lm-addition] sendAiResponse called, port=", !!_port, "text_len=", (text || "").length, "model=", model);
   const msg = { type: "AI_RESPONSE", text, model: model || "" };
   if (_port && _port.postMessage) {
@@ -469,10 +477,12 @@ function loadPreset() {
     const p = PRESETS[key];
     if (p.host && host.match(p.host)) {
       log(`preset loaded: ${key} for host ${host}`);
+      chrome.storage.local.set({ lm_preset_name: key });
       return p;
     }
   }
   log(`fallback preset loaded: default`);
+  chrome.storage.local.set({ lm_preset_name: "default" });
   return PRESETS.default;
 }
 
@@ -550,11 +560,42 @@ function tryClickSkip() {
   return false;
 }
 
+// --- CAPTCHA detection ---
+let _captchaActive = false;
+
+function detectCaptcha() {
+  // Общие признаки для ПК и мобильного: recaptcha-v2-container внутри открытого диалога
+  const container = document.getElementById("recaptcha-v2-container");
+  const dialog = container
+    ? container.closest('[role="dialog"][data-state="open"]')
+    : null;
+  const active = !!dialog;
+
+  if (active && !_captchaActive) {
+    _captchaActive = true;
+    log("detectCaptcha: CAPTCHA detected");
+    try {
+      chrome.runtime.sendMessage({ type: "CAPTCHA_STATUS", active: true });
+    } catch (e) {
+      console.error("[lm-addition] CAPTCHA_STATUS send failed:", e);
+    }
+  } else if (!active && _captchaActive) {
+    _captchaActive = false;
+    log("detectCaptcha: CAPTCHA resolved");
+    try {
+      chrome.runtime.sendMessage({ type: "CAPTCHA_STATUS", active: false });
+    } catch (e) {
+      console.error("[lm-addition] CAPTCHA_STATUS send failed:", e);
+    }
+  }
+}
+
 function scanNewBlocks() {
   if (!isEnabled || !preset) {
     log(`scanNewBlocks: disabled=${!isEnabled} preset=${!!preset}`);
     return;
   }
+  detectCaptcha();
   if (isBattleActive()) {
     log("scanNewBlocks: blocked (battle comparison UI active)");
     tryClickSkip();
@@ -646,6 +687,10 @@ chrome.runtime.onMessage.addListener((msg) => {
     }
   }
   if (msg.type === "INJECT") {
+    if (!isEnabled) {
+      log("INJECT ignored (disabled)");
+      return;
+    }
     log(`INJECT received: "${msg.text.substring(0, 40)}" preset=${!!preset}`);
     if (preset && preset.inject) {
       log(`INJECT: calling preset.inject`);

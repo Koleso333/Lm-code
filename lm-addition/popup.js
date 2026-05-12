@@ -1,79 +1,65 @@
-const MAX_LOGS = 100;
-
 document.addEventListener("DOMContentLoaded", async () => {
-  const toggle = document.getElementById("enabledToggle");
-  const status = document.getElementById("status");
-  const logBox = document.getElementById("log-box");
+  const powerBtn = document.getElementById("powerBtn");
+  const ring = document.getElementById("ring");
+  const glow = document.getElementById("glow");
+  const stateLabel = document.getElementById("stateLabel");
+  const presetLine = document.getElementById("presetLine");
+  const timingLine = document.getElementById("timingLine");
 
-  const result = await chrome.storage.local.get("enabled");
-  const enabled = result.enabled ?? false;
-  toggle.checked = enabled;
-  status.textContent = enabled ? "Активно" : "Выключено";
+  const result = await chrome.storage.local.get(["enabled", "lm_preset_name", "lm_last_request", "lm_last_response"]);
+  let enabled = result.enabled ?? false;
 
-  async function renderLogs() {
-    const r = await chrome.storage.local.get("lm_logs");
-    const logs = r.lm_logs || [];
-    if (logs.length === 0) {
-      logBox.innerHTML = '<div class="log-empty">Нет логов</div>';
-      return;
-    }
-    logBox.textContent = "";
-    for (const line of logs) {
-      const div = document.createElement("div");
-      div.textContent = line;
-      logBox.appendChild(div);
-    }
-    logBox.scrollTop = logBox.scrollHeight;
+  function updateUI() {
+    powerBtn.classList.toggle("active", enabled);
+    ring.classList.toggle("active", enabled);
+    glow.classList.toggle("active", enabled);
+    stateLabel.classList.toggle("active", enabled);
+    stateLabel.textContent = enabled ? "ON" : "OFF";
   }
 
-  renderLogs();
+  function updatePreset(name) {
+    if (!name || name === "default") {
+      presetLine.textContent = "Пресет не загружен";
+    } else {
+      presetLine.textContent = `Пресет: ${name}`;
+    }
+  }
+
+  function formatTime(ts) {
+    if (!ts) return "—";
+    return new Date(ts).toLocaleTimeString("ru-RU", { hour12: false });
+  }
+
+  function updateTiming(req, resp) {
+    const parts = [];
+    if (req) parts.push(`запрос ${formatTime(req)}`);
+    if (resp) parts.push(`ответ ${formatTime(resp)}`);
+    timingLine.textContent = parts.length ? parts.join(" · ") : "—";
+  }
+
+  updateUI();
+  updatePreset(result.lm_preset_name);
+  updateTiming(result.lm_last_request, result.lm_last_response);
 
   chrome.storage.onChanged.addListener((changes) => {
-    if (changes.lm_logs) renderLogs();
+    if (changes.lm_preset_name) updatePreset(changes.lm_preset_name.newValue);
+    if (changes.lm_last_request || changes.lm_last_response) {
+      const req = changes.lm_last_request?.newValue ?? result.lm_last_request;
+      const resp = changes.lm_last_response?.newValue ?? result.lm_last_response;
+      updateTiming(req, resp);
+    }
   });
 
-  toggle.addEventListener("change", async () => {
-    const newValue = toggle.checked;
-    await chrome.storage.local.set({ enabled: newValue });
-    status.textContent = newValue ? "Активно" : "Выключено";
+  powerBtn.addEventListener("click", async () => {
+    enabled = !enabled;
+    await chrome.storage.local.set({ enabled });
+    updateUI();
 
     const tabs = await chrome.tabs.query({});
     for (const tab of tabs) {
       try {
-        await chrome.tabs.sendMessage(tab.id, { type: "TOGGLE", enabled: newValue });
-      } catch (e) {
-      }
+        await chrome.tabs.sendMessage(tab.id, { type: "TOGGLE", enabled });
+      } catch (e) {}
     }
-  });
-
-  const injectBtn = document.getElementById("injectBtn");
-  const injectText = document.getElementById("injectText");
-  async function addPopupLog(msg) {
-    const r = await chrome.storage.local.get("lm_logs");
-    const logs = r.lm_logs || [];
-    const time = new Date().toLocaleTimeString("ru-RU", { hour12: false });
-    logs.push(`[${time}] [popup] ${msg}`);
-    if (logs.length > MAX_LOGS) logs.splice(0, logs.length - MAX_LOGS);
-    await chrome.storage.local.set({ lm_logs: logs });
-  }
-
-  injectBtn.addEventListener("click", async () => {
-    const text = injectText.value.trim();
-    if (!text) { addPopupLog("inject skipped: empty text"); return; }
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tabs.length) { addPopupLog("inject skipped: no active tab"); return; }
-    try {
-      addPopupLog(`inject sending to tab ${tabs[0].id}`);
-      await chrome.tabs.sendMessage(tabs[0].id, { type: "INJECT", text });
-      injectText.value = "";
-      addPopupLog("inject sent ok");
-    } catch (e) {
-      addPopupLog(`inject error: ${e.message}`);
-    }
-  });
-
-  injectText.addEventListener("keydown", async (e) => {
-    if (e.key !== "Enter") return;
-    injectBtn.click();
   });
 });

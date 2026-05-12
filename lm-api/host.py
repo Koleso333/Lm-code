@@ -1,6 +1,8 @@
 import http.server
 import json
 import os
+import time
+import urllib.parse
 import socketserver
 import subprocess
 import sys
@@ -10,9 +12,26 @@ CLI_MODULE = "cli"
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 _lock = threading.Lock()
+_queue_changed = threading.Condition(_lock)
 _inject_queue = []
 _response_queue = []
+_current_status = ""
 _httpd = None
+
+# --- Addition (расширение) heartbeat ---
+_addition_lock = threading.Lock()
+_addition_last_heartbeat = 0.0  # time.time() последнего heartbeat
+_ADDITION_ALIVE_TIMEOUT = 10  # секунд без heartbeat = не готово
+
+
+def _pop_pending(queue_name, timeout_seconds=0):
+    queue = _inject_queue if queue_name == "inject" else _response_queue
+    with _queue_changed:
+        if timeout_seconds > 0 and not queue:
+            _queue_changed.wait(timeout_seconds)
+        if queue:
+            return queue.pop(0)
+    return None
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -41,30 +60,61 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self._send_json(200, {})
 
     def do_GET(self):
-        if self.path == "/status":
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        query = urllib.parse.parse_qs(parsed.query)
+
+        if path == "/status":
             self._send_json(200, {"status": "ok"})
-        elif self.path == "/shutdown":
+        elif path == "/shutdown":
             self._send_json(200, {"status": "shutting down"})
             print("[lm-api] Shutdown requested.")
             threading.Thread(target=lambda: _httpd.shutdown() if _httpd else None, daemon=True).start()
-        elif self.path == "/pending_inject":
-            with _lock:
-                if _inject_queue:
-                    msg = _inject_queue.pop(0)
-                    self._send_json(200, {"pending": True, "text": msg})
-                    return
+        elif path == "/pending_inject":
+            timeout_seconds = self._parse_timeout(query)
+            msg = _pop_pending("inject", timeout_seconds)
+            if msg is not None:
+                self._send_json(200, {"pending": True, "text": msg})
+                return
             self._send_json(200, {"pending": False})
-        elif self.path == "/pending_response":
-            with _lock:
-                if _response_queue:
-                    msg = _response_queue.pop(0)
-                    text = msg.get("text", "") if isinstance(msg, dict) else msg
-                    model = msg.get("model", "") if isinstance(msg, dict) else ""
-                    self._send_json(200, {"pending": True, "text": text, "model": model})
-                    return
+        elif path == "/pending_response":
+            timeout_seconds = self._parse_timeout(query)
+            msg = _pop_pending("response", timeout_seconds)
+            if msg is not None:
+                text = msg.get("text", "") if isinstance(msg, dict) else msg
+                model = msg.get("model", "") if isinstance(msg, dict) else ""
+                self._send_json(200, {"pending": True, "text": text, "model": model})
+                return
             self._send_json(200, {"pending": False})
+        elif path == "/pending_status":
+            global _current_status
+            timeout_seconds = self._parse_timeout(query)
+            since = query.get("since", [""])[0]
+            with _queue_changed:
+                if _current_status == since and timeout_seconds > 0:
+                    _queue_changed.wait(timeout_seconds)
+                status = _current_status
+            self._send_json(200, {"status": status})
+        elif path == "/addition_status":
+            with _addition_lock:
+                last = _addition_last_heartbeat
+            elapsed = time.time() - last
+            ready = elapsed < _ADDITION_ALIVE_TIMEOUT and last > 0
+            self._send_json(200, {
+                "ready": ready,
+                "last_heartbeat": last,
+                "elapsed": round(elapsed, 1),
+            })
         else:
             self._send_json(404, {"error": "not found"})
+
+    def _parse_timeout(self, query):
+        raw = query.get("timeout", ["0"])[0]
+        try:
+            timeout = float(raw)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, min(timeout, 30))
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
@@ -81,17 +131,33 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._handle_parse(payload)
         elif self.path == "/queue_inject":
             text = payload.get("text", "")
-            with _lock:
+            with _queue_changed:
+                global _current_status
                 _inject_queue.append(text)
+                _current_status = "sending"
+                _queue_changed.notify_all()
             print(f"[lm-api] Queued inject: {text[:60]}...")
             self._send_json(200, {"queued": True})
         elif self.path == "/ai_response":
             text = payload.get("text", "")
             model = payload.get("model", "")
-            with _lock:
+            with _queue_changed:
                 _response_queue.append({"text": text, "model": model})
+                _current_status = ""
+                _queue_changed.notify_all()
             print(f"[lm-api] AI response received (model={model}): {text[:60]}...")
             self._send_json(200, {"received": True})
+        elif self.path == "/ai_status":
+            status = payload.get("status", "")
+            with _queue_changed:
+                _current_status = status
+                _queue_changed.notify_all()
+            self._send_json(200, {"ok": True})
+        elif self.path == "/addition_heartbeat":
+            with _addition_lock:
+                global _addition_last_heartbeat
+                _addition_last_heartbeat = time.time()
+            self._send_json(200, {"ok": True})
         elif self.path == "/filter":
             self._handle_filter(payload)
         else:
@@ -151,6 +217,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             actions = {
                 "FILELIST": "Смотрю",
                 "READFILE": "Смотрю",
+                "READLINES": "Смотрю",
                 "WRITEFILE": "Редактирую",
                 "APPENDFILE": "Добавляю в",
                 "DELETEFILE": "Удаляю",
@@ -200,10 +267,12 @@ def main():
     print("  GET  /status")
     print("  GET  /pending_inject")
     print("  GET  /pending_response")
+    print("  GET  /addition_status")
     print("  POST /execute")
     print("  POST /parse")
     print("  POST /queue_inject")
     print("  POST /ai_response")
+    print("  POST /addition_heartbeat")
     print("[lm-api] Press Ctrl+C to stop")
     print("")
     global _httpd

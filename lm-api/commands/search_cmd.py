@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 from responses import build_answer, build_error
-from utils.paths import resolve_path, normalize_display
+from utils.paths import normalize_display
 
 
 def _parse_search_args(arg: str) -> tuple[str, str]:
@@ -18,6 +18,34 @@ def _parse_search_args(arg: str) -> tuple[str, str]:
     if not glob_pattern:
         raise ValueError("Empty glob")
     return pattern, glob_pattern
+
+
+def _split_absolute_glob(glob_pattern: str) -> tuple[Path, str]:
+    """Split an absolute glob like S:\\src\\project\\**\\*.py into
+    a base directory (S:\\src\\project) and a relative glob part (**/*.py).
+
+    Walks path parts left-to-right; the first part containing a glob
+    character (* ? [) marks where the glob portion begins.
+    """
+    normalised = glob_pattern.replace("\\", "/")
+    parts = Path(normalised).parts  # e.g. ('S:\\', 'src', 'project', '**', '*.py')
+
+    base_parts: list[str] = []
+    glob_parts: list[str] = []
+    in_glob = False
+    for part in parts:
+        if in_glob or any(c in part for c in ("*", "?", "[")):
+            in_glob = True
+            glob_parts.append(part)
+        else:
+            base_parts.append(part)
+
+    if not base_parts:
+        raise ValueError("Glob pattern must start with an absolute path (e.g. S:\\src\\project\\**\\*.py)")
+
+    base = Path(*base_parts)
+    rel_glob = "/".join(glob_parts) if glob_parts else "*"
+    return base, rel_glob
 
 
 def cmd_search(arg: str) -> str:
@@ -47,8 +75,28 @@ def cmd_search(arg: str) -> str:
             "error_message": f"Bad regex: {exc}",
         })
 
-    base = Path(".").resolve()
-    matched_files = sorted(base.glob(glob_pattern))
+    try:
+        base, rel_glob = _split_absolute_glob(glob_pattern)
+    except ValueError as exc:
+        return build_error({
+            "command": "SEARCH",
+            "pattern": pattern,
+            "glob": glob_pattern,
+            "error_type": "InvalidGlob",
+            "error_message": str(exc),
+        })
+
+    try:
+        matched_files = sorted(base.glob(rel_glob))
+    except (NotImplementedError, ValueError) as exc:
+        return build_error({
+            "command": "SEARCH",
+            "pattern": pattern,
+            "glob": glob_pattern,
+            "error_type": "InvalidGlob",
+            "error_message": f"Unsupported glob pattern: {exc}",
+        })
+
     matched_files = [f for f in matched_files if f.is_file()]
 
     results: list[str] = []
@@ -67,12 +115,7 @@ def cmd_search(arg: str) -> str:
 
         if file_matches:
             files_with_matches += 1
-            try:
-                rel = filepath.relative_to(base)
-                display = ".\\" + str(rel).replace("/", "\\")
-            except ValueError:
-                display = str(filepath)
-            results.append(display)
+            results.append(str(filepath))
             results.extend(file_matches)
 
     body = "\n".join(results) if results else "(no matches)"

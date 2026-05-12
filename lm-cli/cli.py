@@ -8,6 +8,12 @@ import threading
 import time
 import urllib.request
 
+try:
+    import msvcrt
+    _HAS_MSVCRT = True
+except ImportError:
+    _HAS_MSVCRT = False
+
 HOST = "http://127.0.0.1:11856"
 
 
@@ -37,6 +43,18 @@ def _is_host_running():
         req = urllib.request.Request(f"{HOST}/status", method="GET")
         with urllib.request.urlopen(req, timeout=2) as resp:
             return resp.status == 200
+    except Exception:
+        return False
+
+
+def _is_addition_ready():
+    """Проверяет, жив ли addition (расширение) по heartbeat."""
+    try:
+        req = urllib.request.Request(f"{HOST}/addition_status", method="GET")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            body = resp.read().decode("utf-8")
+            data = json.loads(body)
+            return data.get("ready", False)
     except Exception:
         return False
 
@@ -122,33 +140,90 @@ def get(path):
         return {"error": str(exc)}
 
 
-def _spinner(stop_event):
+def _spinner(stop_event, phase, cancel_event, captcha_flag):
+    labels = {"sending": "Sending", "thinking": "Thinking", "generating": "Generating"}
+    captcha_shown = False
     for dots in itertools.cycle([".", "..", "..."]):
-        if stop_event.is_set():
+        if stop_event.is_set() or cancel_event.is_set():
             break
-        sys.stdout.write(f"\rGeneration{dots}   ")
+
+        # Показать сообщение о CAPTCHA один раз
+        if captcha_flag[0] and not captcha_shown:
+            sys.stdout.write("\r" + " " * 60 + "\r")
+            sys.stdout.flush()
+            print("Обнаружена CAPTCHA. Пожалуйста, перейдите в окно браузера и подтвердите капчу.")
+            captcha_shown = True
+
+        label = labels.get(phase[0], "Waiting")
+        sys.stdout.write(f"\r{label}{dots}   ")
         sys.stdout.flush()
         time.sleep(0.5)
-    sys.stdout.write("\r" + " " * 15 + "\r")
+    sys.stdout.write("\r" + " " * 60 + "\r")
     sys.stdout.flush()
 
 
+def _key_listener(cancel_event, stop_event):
+    """Слушает Ctrl+P для отмены текущего запроса."""
+    if not _HAS_MSVCRT:
+        return
+    while not stop_event.is_set():
+        if msvcrt.kbhit():
+            ch = msvcrt.getch()
+            if ch == b'\x10':  # Ctrl+P
+                cancel_event.set()
+                return
+        stop_event.wait(0.1)
+
+
 def wait_for_response():
+    """Ожидает ответ от AI.
+
+    Возвращает (text, model, True) при успехе.
+    Возвращает ("", "", False) если отменено через Ctrl+P.
+    """
+    phase = ["sending"]
+    captcha_flag = [False]
     stop_event = threading.Event()
-    t = threading.Thread(target=_spinner, args=(stop_event,))
-    t.start()
+    cancel_event = threading.Event()
+
+    def _poll_status():
+        last_status = ""
+        while not stop_event.is_set():
+            status_data = get(f"/pending_status?since={last_status}&timeout=25")
+            if not status_data.get("error"):
+                new_status = status_data.get("status", "")
+                last_status = new_status
+                if new_status == "captcha":
+                    captcha_flag[0] = True
+                elif new_status:
+                    captcha_flag[0] = False
+                    phase[0] = new_status
+                else:
+                    captcha_flag[0] = False
+            else:
+                stop_event.wait(1)
+
+    t_spinner = threading.Thread(target=_spinner, args=(stop_event, phase, cancel_event, captcha_flag))
+    t_status = threading.Thread(target=_poll_status, daemon=True)
+    t_keys = threading.Thread(target=_key_listener, args=(cancel_event, stop_event), daemon=True)
+    t_spinner.start()
+    t_status.start()
+    t_keys.start()
     try:
         while True:
-            data = get("/pending_response")
+            if cancel_event.is_set():
+                return "", "", False
+            data = get("/pending_response?timeout=3")
             if data.get("error"):
-                time.sleep(2)
+                if cancel_event.is_set():
+                    return "", "", False
+                time.sleep(0.5)
                 continue
             if data.get("pending"):
-                return data.get("text", ""), data.get("model", "")
-            time.sleep(2)
+                return data.get("text", ""), data.get("model", ""), True
     finally:
         stop_event.set()
-        t.join()
+        t_spinner.join()
 
 
 def show_response(text, model=""):
@@ -304,7 +379,7 @@ def cmd_clear():
     print(ASCII_ART)
     print("Порт хоста: " + HOST)
     print("Введи промпт и нажми Enter")
-    print("P.S. Ctrl+C для безопасного выхода.\n")
+    print("P.S. Ctrl+C — выход, Ctrl+P — отмена запроса.\n")
     return None
 
 
@@ -362,7 +437,7 @@ def main():
     print(ASCII_ART)
     print("Порт хоста: " + HOST)
     print("Введи промпт и нажми Enter")
-    print("P.S. Ctrl+C для безопасного выхода.\n")
+    print("P.S. Ctrl+C — выход, Ctrl+P — отмена запроса.\n")
 
     try:
         while True:
@@ -383,12 +458,22 @@ def main():
                 current_text = text
 
             while True:
+                # Проверяем готовность addition перед отправкой
+                if not _is_addition_ready():
+                    print("ОШИБКА: Addition (расширение) не подключено или отключено.")
+                    print("Убедитесь, что расширение lm-addition включено в браузере.")
+                    break
+
                 result = post("/queue_inject", {"text": current_text})
                 if result.get("error"):
                     print(f"Ошибка отправки: {result['error']}")
                     break
 
-                response_text, model = wait_for_response()
+                response_text, model, ok = wait_for_response()
+                if not ok:
+                    print("\nЗапрос отменён (Ctrl+P).")
+                    break
+
                 filtered = filter_commands(response_text)
                 show_response(filtered, model)
 

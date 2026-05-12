@@ -18,7 +18,15 @@ def cmd_filelist(arg: str) -> str:
         })
 
     display_path = normalize_display(arg)
-    target = resolve_path(arg)
+    try:
+        target = resolve_path(arg)
+    except ValueError:
+        return build_error({
+            "command": "FILELIST",
+            "path": display_path,
+            "error_type": "InvalidArguments",
+            "error_message": "Path must be absolute",
+        })
 
     if not target.exists():
         return build_error({
@@ -85,7 +93,15 @@ def cmd_readfile(arg: str) -> str:
         })
 
     display_path = normalize_display(arg)
-    target = resolve_path(arg)
+    try:
+        target = resolve_path(arg)
+    except ValueError:
+        return build_error({
+            "command": "READFILE",
+            "path": display_path,
+            "error_type": "InvalidArguments",
+            "error_message": "Path must be absolute",
+        })
 
     if not target.exists():
         return build_error({
@@ -130,6 +146,115 @@ def cmd_readfile(arg: str) -> str:
     return build_answer(fields, body_sections={"content": content})
 
 
+def _parse_readlines_args(arg: str) -> tuple[str, int, int]:
+    parts = arg.rsplit(",", 2)
+    if len(parts) < 3:
+        raise ValueError("Expected three arguments: path, start, count")
+    path = parts[0].strip()
+    try:
+        start_line = int(parts[1].strip())
+        count = int(parts[2].strip())
+    except ValueError:
+        raise ValueError("Start and count must be integers")
+    if start_line < 1:
+        raise ValueError("start must be >= 1")
+    if count < 1:
+        raise ValueError("count must be >= 1")
+    return path, start_line, count
+
+
+def cmd_readlines(arg: str) -> str:
+    if not arg:
+        return build_error({
+            "command": "READLINES",
+            "path": "(none)",
+            "error_type": "InvalidArguments",
+            "error_message": "Missing arguments in READLINES(path, start, count)",
+        })
+
+    try:
+        path_str, start_line, count = _parse_readlines_args(arg)
+    except ValueError as exc:
+        return build_error({
+            "command": "READLINES",
+            "path": "(none)",
+            "error_type": "InvalidArguments",
+            "error_message": str(exc),
+        })
+
+    display_path = normalize_display(path_str)
+    try:
+        target = resolve_path(path_str)
+    except ValueError:
+        return build_error({
+            "command": "READLINES",
+            "path": display_path,
+            "error_type": "InvalidArguments",
+            "error_message": "Path must be absolute",
+        })
+
+    if not target.exists():
+        return build_error({
+            "command": "READLINES",
+            "path": display_path,
+            "error_type": "FileNotFound",
+            "error_message": "File not found",
+        })
+
+    if not target.is_file():
+        return build_error({
+            "command": "READLINES",
+            "path": display_path,
+            "error_type": "NotAFile",
+            "error_message": "Path is not a file",
+        })
+
+    try:
+        file_text = target.read_text(encoding="utf-8")
+        size = target.stat().st_size
+    except PermissionError:
+        return build_error({
+            "command": "READLINES",
+            "path": display_path,
+            "error_type": "PermissionDenied",
+            "error_message": "Permission denied",
+        })
+    except UnicodeDecodeError:
+        return build_error({
+            "command": "READLINES",
+            "path": display_path,
+            "error_type": "DecodeError",
+            "error_message": "File is not valid UTF-8",
+        })
+
+    lines = file_text.splitlines(keepends=True)
+    total_lines = len(lines)
+
+    if start_line > total_lines:
+        return build_error({
+            "command": "READLINES",
+            "path": display_path,
+            "error_type": "OutOfRange",
+            "error_message": f"start {start_line} exceeds file length ({total_lines} lines)",
+        })
+
+    end_line = min(start_line + count - 1, total_lines)
+    selected = lines[start_line - 1 : end_line]
+    content = "".join(selected)
+
+    fields = {
+        "command": "READLINES",
+        "path": display_path,
+        "start_line": str(start_line),
+        "end_line": str(end_line),
+        "lines_returned": str(len(selected)),
+        "total_lines": str(total_lines),
+        "encoding": "utf-8",
+        "size_bytes": str(size),
+    }
+    return build_answer(fields, body_sections={"content": content})
+
+
 def cmd_writefile(arg: str, content: str | None) -> str:
     if not arg:
         return build_error({
@@ -140,7 +265,15 @@ def cmd_writefile(arg: str, content: str | None) -> str:
         })
 
     display_path = normalize_display(arg)
-    target = resolve_path(arg)
+    try:
+        target = resolve_path(arg)
+    except ValueError:
+        return build_error({
+            "command": "WRITEFILE",
+            "path": display_path,
+            "error_type": "InvalidArguments",
+            "error_message": "Path must be absolute",
+        })
 
     if content is None:
         return build_error({
@@ -187,7 +320,15 @@ def cmd_appendfile(arg: str, content: str | None) -> str:
         })
 
     display_path = normalize_display(arg)
-    target = resolve_path(arg)
+    try:
+        target = resolve_path(arg)
+    except ValueError:
+        return build_error({
+            "command": "APPENDFILE",
+            "path": display_path,
+            "error_type": "InvalidArguments",
+            "error_message": "Path must be absolute",
+        })
 
     if content is None:
         return build_error({
@@ -235,7 +376,15 @@ def cmd_deletefile(arg: str) -> str:
         })
 
     display_path = normalize_display(arg)
-    target = resolve_path(arg)
+    try:
+        target = resolve_path(arg)
+    except ValueError:
+        return build_error({
+            "command": "DELETEFILE",
+            "path": display_path,
+            "error_type": "InvalidArguments",
+            "error_message": "Path must be absolute",
+        })
 
     if not target.exists():
         return build_error({
