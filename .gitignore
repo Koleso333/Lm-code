@@ -1,6 +1,7 @@
 # Logs
 *.log
 lm-api/logs/
+.claude/
 
 # Python
 __pycache__/
