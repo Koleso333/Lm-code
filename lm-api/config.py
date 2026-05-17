@@ -5,14 +5,14 @@ import os
 from pathlib import Path
 
 DEFAULT_CONFIG = {
-    "auto_copy_to_clipboard": False,
+    "checkrain": False,
 }
 
 _config: dict | None = None
 
 
 def _config_path() -> Path:
-    return Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) / "config.json"
+    return Path(os.path.dirname(os.path.abspath(__file__))) / "config.json"
 
 
 def load_config() -> dict:
@@ -33,3 +33,15 @@ def get_config() -> dict:
     if _config is None:
         return load_config()
     return _config
+
+
+def save_config(data: dict | None = None) -> None:
+    global _config
+    if data is not None:
+        if _config is None:
+            load_config()
+        _config.update(data)
+    cfg = _config if _config is not None else dict(DEFAULT_CONFIG)
+    path = _config_path()
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=4, ensure_ascii=False)

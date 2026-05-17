@@ -24,9 +24,20 @@ function connectPort() {
           return;
         }
         console.log("[lm-addition] INJECT via port, text len:", (msg.text || "").length);
+        const mode = getSiteMode();
+        if (mode !== null && mode !== "Direct") {
+          log(`INJECT blocked: mode="${mode}", not Direct`);
+          sendAiResponse("Выберите режим Direct в браузере для корректной работы", "");
+          return;
+        }
+        noteInjectForSiteError();
         if (preset && preset.inject) {
           preset.inject(msg.text);
         }
+        setTimeout(detectSiteError, 1500);
+      }
+      if (msg.type === "STOP_RETRY") {
+        stopRetry();
       }
     });
     _port.onDisconnect.addListener(() => {
@@ -539,25 +550,73 @@ function scanBlock(block) {
 
   log(`scanBlock: found command ${cmd.name} at ${cmd.startIdx}-${cmd.endIdx}`);
   highlightTextRange(block, cmd.startIdx, cmd.endIdx, "lm-highlight-api");
-  log("scanBlock: command highlighted, sending to background");
-  chrome.runtime.sendMessage({ type: "EXECUTE_COMMAND", raw: cmd.raw });
+  log("scanBlock: command highlighted");
 }
 
 function isBattleActive() {
-  return !!document.querySelector('[aria-roledescription="carousel"]');
+  // Старый вариант: carousel
+  if (document.querySelector('[aria-roledescription="carousel"]')) return true;
+  // Новый вариант: панель с кнопками "Продолжить с A" / "Пропустить" / "Продолжить с B"
+  for (const btn of document.querySelectorAll("button")) {
+    const span = btn.querySelector("span");
+    if (span && (span.textContent.trim() === "Пропустить" || span.textContent.trim() === "Skip")) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function tryClickSkip() {
   for (const btn of document.querySelectorAll("button")) {
     const span = btn.querySelector("span");
-    if (span && span.textContent.trim() === "Skip") {
-      log("tryClickSkip: clicking Skip button");
+    const text = span ? span.textContent.trim() : "";
+    if (text === "Пропустить" || text === "Skip") {
+      log("tryClickSkip: clicking Skip/Пропустить button");
       btn.click();
       return true;
     }
   }
   log("tryClickSkip: Skip button not found yet");
   return false;
+}
+
+// --- Mode check ---
+function getSiteMode() {
+  for (const btn of document.querySelectorAll('button[role="combobox"]')) {
+    const p = btn.querySelector("p.text-base.font-normal");
+    if (p) return p.textContent.trim();
+  }
+  return null;
+}
+
+// --- AI status reporting (sending/thinking/generating/site_error) ---
+let _lastReportedStatus = null;
+
+function sendAiStatus(status) {
+  if (_lastReportedStatus === status) return;
+  _lastReportedStatus = status;
+  try {
+    chrome.runtime.sendMessage({ type: "AI_STATUS", status: status || "" });
+    log(`sendAiStatus: ${status || "(empty)"}`);
+  } catch (e) {
+    log(`sendAiStatus failed: ${e}`);
+  }
+}
+
+function detectAiStatus() {
+  if (!isEnabled) return;
+
+  // Ищем любой AI-баббл со спиннером напрямую, не через getLastResponse —
+  // _isAi требует "Like" button, которой нет во время стриминга/ошибки
+  for (const el of document.querySelectorAll(".bg-surface-primary")) {
+    if (el.closest(".bg-surface-raised")) continue;
+    if (!el.querySelector(".animate-spin")) continue;
+
+    const prose = el.querySelector(".prose");
+    const hasText = !!(prose && prose.textContent && prose.textContent.trim().length > 0);
+    sendAiStatus(hasText ? "generating" : "thinking");
+    return;
+  }
 }
 
 // --- CAPTCHA detection ---
@@ -590,12 +649,107 @@ function detectCaptcha() {
   }
 }
 
+// --- Site error detection (e.g. "Something went wrong while generating the response") ---
+let _siteErrorActive = false;
+let _siteErrorRetryTimer = null;
+let _lastInjectTime = 0;
+let _retryBlocked = false;
+
+function stopRetry() {
+  _retryBlocked = true;
+  if (_siteErrorRetryTimer) {
+    clearTimeout(_siteErrorRetryTimer);
+    _siteErrorRetryTimer = null;
+  }
+  _siteErrorActive = false;
+  log("stopRetry: retry stopped by cancel signal");
+}
+
+function noteInjectForSiteError() {
+  _lastInjectTime = Date.now();
+  _retryBlocked = false;
+  // позволяем статусам отправляться заново для нового запроса
+  _lastReportedStatus = null;
+}
+
+function detectSiteError() {
+  if (!isEnabled) return;
+  if (_siteErrorActive) return;
+  if (_retryBlocked) return;
+
+  // Ищем ошибку в последнем AI-баббле напрямую по DOM.
+  // getLastResponse() не подходит — _isAi требует "Like" button, которой нет при ошибке.
+  // Берём последний .bg-surface-primary не внутри .bg-surface-raised.
+  let errorP = null;
+  const aiEls = Array.from(document.querySelectorAll(".bg-surface-primary"))
+    .filter(el => !el.closest(".bg-surface-raised"));
+  for (let i = aiEls.length - 1; i >= 0; i--) {
+    for (const p of aiEls[i].querySelectorAll("p.text-interactive-negative")) {
+      if (p.textContent.includes("Something went wrong")) {
+        errorP = p;
+        break;
+      }
+    }
+    if (errorP) break;
+  }
+
+  if (!errorP) return;
+
+  const errorContainer = errorP.closest("div.flex.items-center") || errorP.parentElement;
+  if (!errorContainer) return;
+
+  const handledAt = parseInt(errorContainer.dataset.lmSiteErrorHandledAt || "0", 10);
+  if (handledAt && handledAt >= _lastInjectTime) return;
+
+  errorContainer.dataset.lmSiteErrorHandledAt = String(Date.now());
+  _siteErrorActive = true;
+
+  log("detectSiteError: site error detected, notifying CLI and retrying in 5s");
+
+  // показываем статус ошибки в CLI вместо обычного спиннера, не отдаём управление пользователю
+  sendAiStatus("site_error");
+
+  let retryBtn = null;
+  for (const b of errorContainer.querySelectorAll("button")) {
+    if (b.textContent.trim().startsWith("Retry")) {
+      retryBtn = b;
+      break;
+    }
+  }
+
+  if (!retryBtn) {
+    log("detectSiteError: Retry button not found, releasing lock");
+    _siteErrorActive = false;
+    return;
+  }
+
+  if (_siteErrorRetryTimer) clearTimeout(_siteErrorRetryTimer);
+  _siteErrorRetryTimer = setTimeout(() => {
+    _siteErrorRetryTimer = null;
+    try {
+      if (retryBtn.isConnected && !retryBtn.disabled) {
+        log("detectSiteError: clicking Retry");
+        // переводим CLI обратно в Sending до клика, чтобы пользователь увидел перезапуск
+        sendAiStatus("sending");
+        retryBtn.click();
+      } else {
+        log("detectSiteError: Retry button no longer available");
+      }
+    } catch (e) {
+      log("detectSiteError: retry click failed: " + e);
+    }
+    _siteErrorActive = false;
+  }, 5000);
+}
+
 function scanNewBlocks() {
   if (!isEnabled || !preset) {
     log(`scanNewBlocks: disabled=${!isEnabled} preset=${!!preset}`);
     return;
   }
   detectCaptcha();
+  detectSiteError();
+  detectAiStatus();
   if (isBattleActive()) {
     log("scanNewBlocks: blocked (battle comparison UI active)");
     tryClickSkip();
@@ -692,12 +846,23 @@ chrome.runtime.onMessage.addListener((msg) => {
       return;
     }
     log(`INJECT received: "${msg.text.substring(0, 40)}" preset=${!!preset}`);
+    const mode = getSiteMode();
+    if (mode !== null && mode !== "Direct") {
+      log(`INJECT blocked: mode="${mode}", not Direct`);
+      sendAiResponse("Выберите режим Direct в браузере для корректной работы", "");
+      return;
+    }
+    noteInjectForSiteError();
     if (preset && preset.inject) {
       log(`INJECT: calling preset.inject`);
       preset.inject(msg.text);
     } else {
       log("INJECT: no preset or inject method");
     }
+    setTimeout(detectSiteError, 1500);
+  }
+  if (msg.type === "STOP_RETRY") {
+    stopRetry();
   }
 });
 

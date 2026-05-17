@@ -16,6 +16,7 @@ _queue_changed = threading.Condition(_lock)
 _inject_queue = []
 _response_queue = []
 _current_status = ""
+_retry_blocked = False
 _httpd = None
 
 # --- Addition (расширение) heartbeat ---
@@ -60,6 +61,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self._send_json(200, {})
 
     def do_GET(self):
+        global _current_status
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
@@ -87,7 +89,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return
             self._send_json(200, {"pending": False})
         elif path == "/pending_status":
-            global _current_status
             timeout_seconds = self._parse_timeout(query)
             since = query.get("since", [""])[0]
             with _queue_changed:
@@ -95,6 +96,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     _queue_changed.wait(timeout_seconds)
                 status = _current_status
             self._send_json(200, {"status": status})
+        elif path == "/retry_blocked":
+            with _queue_changed:
+                blocked = _retry_blocked
+            self._send_json(200, {"blocked": blocked})
         elif path == "/addition_status":
             with _addition_lock:
                 last = _addition_last_heartbeat
@@ -117,6 +122,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return max(0, min(timeout, 30))
 
     def do_POST(self):
+        global _current_status, _retry_blocked, _addition_last_heartbeat
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length).decode("utf-8")
         try:
@@ -132,12 +138,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/queue_inject":
             text = payload.get("text", "")
             with _queue_changed:
-                global _current_status
                 _inject_queue.append(text)
                 _current_status = "sending"
+                _retry_blocked = False
                 _queue_changed.notify_all()
             print(f"[lm-api] Queued inject: {text[:60]}...")
             self._send_json(200, {"queued": True})
+        elif self.path == "/cancel_inject":
+            with _queue_changed:
+                _inject_queue.clear()
+                _response_queue.clear()
+                _retry_blocked = True
+                _current_status = ""
+                _queue_changed.notify_all()
+            print("[lm-api] cancel_inject: queues cleared, retry blocked")
+            self._send_json(200, {"ok": True})
+        elif self.path == "/flush_queues":
+            with _queue_changed:
+                dropped = len(_inject_queue) + len(_response_queue)
+                _inject_queue.clear()
+                _response_queue.clear()
+                _current_status = ""
+                _queue_changed.notify_all()
+            if dropped:
+                print(f"[lm-api] flush_queues: dropped {dropped} stale items")
+            self._send_json(200, {"ok": True})
         elif self.path == "/ai_response":
             text = payload.get("text", "")
             model = payload.get("model", "")
@@ -155,7 +180,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True})
         elif self.path == "/addition_heartbeat":
             with _addition_lock:
-                global _addition_last_heartbeat
                 _addition_last_heartbeat = time.time()
             self._send_json(200, {"ok": True})
         elif self.path == "/filter":

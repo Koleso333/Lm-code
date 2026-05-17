@@ -7,6 +7,12 @@ from responses import build_answer, build_error
 from utils.paths import resolve_path, normalize_display
 from utils.sizes import format_size
 
+_FILELIST_BLOCKED: set[Path] = {
+    Path("C:/").resolve(),
+    Path("C:/Users").resolve(),
+    Path("C:/Windows").resolve(),
+}
+
 
 def cmd_filelist(arg: str) -> str:
     if not arg:
@@ -42,6 +48,14 @@ def cmd_filelist(arg: str) -> str:
             "path": display_path,
             "error_type": "NotADirectory",
             "error_message": "Path is not a directory",
+        })
+
+    if target in _FILELIST_BLOCKED:
+        return build_error({
+            "command": "FILELIST",
+            "path": display_path,
+            "error_type": "PermissionDenied",
+            "error_message": "Listing this directory is not allowed",
         })
 
     try:

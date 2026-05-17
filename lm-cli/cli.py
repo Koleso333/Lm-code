@@ -2,6 +2,7 @@ import itertools
 import ctypes
 import json
 import os
+import random
 import subprocess
 import sys
 import threading
@@ -78,7 +79,11 @@ def start_host():
     _kill_existing_host()
 
     lm_api_dir = os.path.join(_project_root(), "lm-api")
-    env = {**os.environ, "PYTHONPATH": lm_api_dir + os.pathsep + os.environ.get("PYTHONPATH", "")}
+    env = {
+        **os.environ,
+        "PYTHONPATH": lm_api_dir + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        "PYTHONIOENCODING": "utf-8",
+    }
 
     proc = subprocess.Popen(
         [sys.executable, "host.py"],
@@ -141,7 +146,13 @@ def get(path):
 
 
 def _spinner(stop_event, phase, cancel_event, captcha_flag):
-    labels = {"sending": "Sending", "thinking": "Thinking", "generating": "Generating"}
+    labels = {
+        "sending": "Sending",
+        "thinking": "Thinking",
+        "generating": "Generating",
+        "site_error": "Произошла ошибка сайта, пробую снова через 5 сек",
+    }
+    line_width = 80
     captcha_shown = False
     for dots in itertools.cycle([".", "..", "..."]):
         if stop_event.is_set() or cancel_event.is_set():
@@ -149,16 +160,16 @@ def _spinner(stop_event, phase, cancel_event, captcha_flag):
 
         # Показать сообщение о CAPTCHA один раз
         if captcha_flag[0] and not captcha_shown:
-            sys.stdout.write("\r" + " " * 60 + "\r")
+            sys.stdout.write("\r" + " " * line_width + "\r")
             sys.stdout.flush()
             print("Обнаружена CAPTCHA. Пожалуйста, перейдите в окно браузера и подтвердите капчу.")
             captcha_shown = True
 
         label = labels.get(phase[0], "Waiting")
-        sys.stdout.write(f"\r{label}{dots}   ")
+        sys.stdout.write("\r" + " " * line_width + "\r" + f"{label}{dots}")
         sys.stdout.flush()
         time.sleep(0.5)
-    sys.stdout.write("\r" + " " * 60 + "\r")
+    sys.stdout.write("\r" + " " * line_width + "\r")
     sys.stdout.flush()
 
 
@@ -267,6 +278,44 @@ ASCII_ART = r"""
 
 def _cli_dir():
     return os.path.dirname(os.path.abspath(__file__))
+
+
+# --- Config (lm-api/config.json) ---
+
+def _config_path():
+    return os.path.join(_project_root(), "lm-api", "config.json")
+
+
+def _load_config():
+    try:
+        with open(_config_path(), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_config(data):
+    cfg = _load_config()
+    cfg.update(data)
+    with open(_config_path(), "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=4, ensure_ascii=False)
+
+
+# --- Checkrain ---
+
+_CHECKRAIN_CHARS = [chr(c) for r in [
+    (0x2190, 0x21FF),   # Arrows
+    (0x2200, 0x22FF),   # Mathematical Operators
+    (0x2500, 0x257F),   # Box Drawing
+    (0x2580, 0x259F),   # Block Elements
+    (0x25A0, 0x25FF),   # Geometric Shapes
+] for c in range(r[0], r[1] + 1)]
+
+
+def _apply_checkrain(text):
+    if _load_config().get("checkrain", False):
+        return text + random.choice(_CHECKRAIN_CHARS)
+    return text
 
 
 def cmd_ai_sendprotocol():
@@ -385,16 +434,32 @@ def cmd_clear():
 
 def cmd_help():
     print("Доступные команды:")
-    print("  /ai/send_protocol — отправить содержимое send_protocol.txt в AI")
-    print("  /ai/send_status   — отправить информацию о системе и времени в AI")
+    print("  /ai/send_protocol  — отправить содержимое send_protocol.txt в AI")
+    print("  /ai/send_status    — отправить информацию о системе и времени в AI")
+    print("  /checkrain/on      — включить checkrain")
+    print("  /checkrain/off     — выключить checkrain")
     print("  /clear             — очистить консоль")
     print("  /help              — показать это сообщение")
+    return None
+
+
+def cmd_checkrain_on():
+    _save_config({"checkrain": True})
+    print("Checkrain включён.")
+    return None
+
+
+def cmd_checkrain_off():
+    _save_config({"checkrain": False})
+    print("Checkrain выключен.")
     return None
 
 
 COMMANDS = {
     ("ai", "send_protocol"): cmd_ai_sendprotocol,
     ("ai", "send_status"): cmd_ai_sendstatus,
+    ("checkrain", "on"): cmd_checkrain_on,
+    ("checkrain", "off"): cmd_checkrain_off,
     ("clear",): cmd_clear,
     ("help",): cmd_help,
 }
@@ -464,13 +529,18 @@ def main():
                     print("Убедитесь, что расширение lm-addition включено в браузере.")
                     break
 
-                result = post("/queue_inject", {"text": current_text})
+                # Сбрасываем очереди перед каждым новым запросом,
+                # чтобы не подхватить ответ от предыдущего (отменённого) запроса
+                post("/flush_queues", {})
+
+                result = post("/queue_inject", {"text": _apply_checkrain(current_text)})
                 if result.get("error"):
                     print(f"Ошибка отправки: {result['error']}")
                     break
 
                 response_text, model, ok = wait_for_response()
                 if not ok:
+                    post("/cancel_inject", {})
                     print("\nЗапрос отменён (Ctrl+P).")
                     break
 

@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import ast,sys; [ast.parse\\(open\\(p,encoding='utf-8'\\).read\\(\\)\\) for p in __import__\\('pathlib'\\).Path\\('.'\\).rglob\\('*.py'\\)]; print\\('syntax OK'\\)\")",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:pypi.org)",
+      "Bash(python -c ' *)",
+      "WebFetch(domain:www.theiphonewiki.com)",
+      "WebFetch(domain:www.ipodlinux.org)",
+      "WebFetch(domain:ihash.marcan.st)",
+      "WebFetch(domain:tmz.fedorapeople.org)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:sourceforge.net)",
+      "WebFetch(domain:wiki.archlinux.org)",
+      "WebFetch(domain:forums.macrumors.com)",
+      "WebFetch(domain:marcan.st)"
+    ]
+  }
+}

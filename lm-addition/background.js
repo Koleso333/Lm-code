@@ -73,6 +73,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true;
   }
+  if (msg.type === "AI_STATUS") {
+    (async () => {
+      try {
+        await fetch("http://127.0.0.1:11856/ai_status", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: msg.status || "" }),
+        });
+        console.log("[bg] AI_STATUS forwarded:", msg.status);
+      } catch (err) {
+        console.error("[bg] AI_STATUS forward failed:", err);
+      }
+    })();
+    return true;
+  }
   if (msg.type === "CAPTCHA_STATUS") {
     (async () => {
       try {
@@ -108,6 +123,25 @@ async function pollInject() {
   try {
     const cfg = await chrome.storage.local.get("enabled");
     if (!cfg.enabled) return;
+
+    // проверяем флаг отмены — если выставлен, останавливаем retry в content.js
+    try {
+      const rbResp = await fetch("http://127.0.0.1:11856/retry_blocked");
+      if (rbResp.ok) {
+        const rbData = await rbResp.json();
+        if (rbData.blocked) {
+          console.log("[bg] retry_blocked detected, sending STOP_RETRY");
+          for (const [tabId, port] of _ports.entries()) {
+            try { port.postMessage({ type: "STOP_RETRY" }); } catch (e) { _ports.delete(tabId); }
+          }
+          const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+          for (const tab of tabs) {
+            try { await chrome.tabs.sendMessage(tab.id, { type: "STOP_RETRY" }); } catch (e) {}
+          }
+        }
+      }
+    } catch (e) { /* host может быть недоступен */ }
+
     const resp = await fetch("http://127.0.0.1:11856/pending_inject");
     if (!resp.ok) {
       console.error("[bg] pollInject error:", resp.status);
