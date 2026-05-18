@@ -7,7 +7,7 @@ from typing import Callable, Optional
 CONTENT_COMMANDS = {"WRITEFILE", "APPENDFILE"}
 KNOWN_COMMANDS = {
     "FILELIST", "READFILE", "READLINES", "WRITEFILE", "APPENDFILE", "DELETEFILE",
-    "RUN", "SEARCH", "EDITLINES", "EDIT",
+    "RUN", "SEARCH", "EDITLINES", "EDIT", "QUESTIONS",
 }
 
 
@@ -136,6 +136,17 @@ def parse_command(
         expect_hash, content = _read_editlines_extra(read_line, name, arg)
     elif name == "EDIT":
         old_content, new_content = _read_edit_extra(read_line, name, arg)
+    elif name == "QUESTIONS":
+        # Read until QUESTIONS_END
+        q_lines: list[str] = []
+        while True:
+            line = read_line()
+            if line is None:
+                raise ParseError("Unexpected EOF before QUESTIONS_END", command=name, arg=arg)
+            if line.strip() == "QUESTIONS_END":
+                break
+            q_lines.append(line)
+        content = "\n".join(q_lines)
 
     return ParsedCommand(
         name=name, arg=arg, content=content,
@@ -170,6 +181,18 @@ def extract_commands(text: str) -> list[ParsedCommand]:
         name = stripped[:paren].strip()
         if name not in KNOWN_COMMANDS:
             continue
+
+        # For QUESTIONS, find QUESTIONS_END to determine end_line
+        if name == "QUESTIONS":
+            end_idx = idx
+            found_end = False
+            while end_idx < len(lines):
+                if lines[end_idx].strip() == "QUESTIONS_END":
+                    found_end = True
+                    break
+                end_idx += 1
+            if not found_end:
+                continue
 
         try:
             cmd = parse_command(stripped, read_line)

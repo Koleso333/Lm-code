@@ -249,6 +249,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "SEARCH": "Ищу",
                 "EDITLINES": "Редактирую",
                 "EDIT": "Редактирую",
+                "QUESTIONS": "Вопросы",
             }
             to_remove = set()
             replacements = {}

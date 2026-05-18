@@ -257,6 +257,139 @@ def has_commands(text):
     return bool(result.get("commands", []))
 
 
+def _has_questions(text):
+    """Проверяет, содержит ли текст команду QUESTIONS."""
+    result = post("/parse", {"text": text})
+    if result.get("error"):
+        return False
+    for cmd in result.get("commands", []):
+        if cmd.get("name") == "QUESTIONS":
+            return True
+    return False
+
+
+def _has_non_question_commands(text):
+    """Проверяет, есть ли команды кроме QUESTIONS."""
+    result = post("/parse", {"text": text})
+    if result.get("error"):
+        return False
+    for cmd in result.get("commands", []):
+        if cmd.get("name") != "QUESTIONS":
+            return True
+    return False
+
+
+def _parse_questions(text):
+    """Парсит QUESTIONS из текста ответа AI.
+
+    Возвращает список вопросов:
+    [
+        {"num": 1, "text": "...", "options": [(1, "..."), (2, "...")]},
+        ...
+    ]
+    """
+    import re
+    questions = []
+    # Найти блок QUESTIONS(N) ... QUESTIONS_END
+    m = re.search(r'QUESTIONS\(\d+\)\s*\n(.*?)QUESTIONS_END', text, re.DOTALL)
+    if not m:
+        return questions
+
+    body = m.group(1)
+    current_q = None
+
+    for line in body.splitlines():
+        line = line.rstrip()
+        # Q1: текст вопроса
+        qm = re.match(r'^Q(\d+):\s*(.+)', line)
+        if qm:
+            if current_q:
+                questions.append(current_q)
+            current_q = {"num": int(qm.group(1)), "text": qm.group(2).strip(), "options": []}
+            continue
+        # 1: текст варианта
+        om = re.match(r'^\s+(\d+):\s*(.+)', line)
+        if om and current_q:
+            current_q["options"].append((int(om.group(1)), om.group(2).strip()))
+
+    if current_q:
+        questions.append(current_q)
+
+    return questions
+
+
+def _ask_questions(questions):
+    """Задаёт вопросы пользователю интерактивно. Возвращает список ответов.
+
+    Каждый ответ: {"q_num": N, "choice_num": M, "choice_text": "..."}
+    """
+    answers = []
+    total = len(questions)
+
+    for i, q in enumerate(questions):
+        print(f"\n--- Вопрос {i + 1} из {total} ---")
+        print(q["text"])
+        another_nums = set()
+        for opt_num, opt_text in q["options"]:
+            if opt_text == "{ANOTHER}":
+                print(f"  {opt_num}. Свой вариант")
+                another_nums.add(opt_num)
+            else:
+                print(f"  {opt_num}. {opt_text}")
+
+        valid_nums = {n for n, _ in q["options"]}
+        while True:
+            try:
+                raw = input("> ").strip()
+            except EOFError:
+                raw = ""
+            if not raw:
+                print("Введите номер варианта.")
+                continue
+            try:
+                choice = int(raw)
+            except ValueError:
+                print("Введите число.")
+                continue
+            if choice not in valid_nums:
+                print(f"Нет варианта {choice}. Допустимые: {', '.join(str(n) for n in sorted(valid_nums))}")
+                continue
+
+            if choice in another_nums:
+                # Свой вариант — запросить текст
+                while True:
+                    try:
+                        custom = input("Введите свой вариант: ").strip()
+                    except EOFError:
+                        custom = ""
+                    if custom:
+                        break
+                    print("Вариант не может быть пустым.")
+                answers.append({"q_num": q["num"], "choice_num": choice, "choice_text": custom})
+            else:
+                # Обычный вариант
+                choice_text = ""
+                for n, t in q["options"]:
+                    if n == choice:
+                        choice_text = t
+                        break
+                answers.append({"q_num": q["num"], "choice_num": choice, "choice_text": choice_text})
+            break
+
+    return answers
+
+
+def _build_questions_answer(answers):
+    """Формирует ANSWER-блок для QUESTIONS."""
+    lines = ["```txt", "ANSWER{", f"command: QUESTIONS", f"count: {len(answers)}", "answers:", "----"]
+    for a in answers:
+        lines.append(f"Q{a['q_num']}: {a['choice_num']} ({a['choice_text']})")
+    lines.append("----")
+    lines.append("}")
+    lines.append("```")
+    return "\n".join(lines)
+
+
 def filter_commands(text):
     result = post("/filter", {"text": text})
     if result.get("error"):
@@ -550,14 +683,32 @@ def main():
                 if not has_commands(response_text):
                     break
 
-                exec_result = post("/execute", {"raw": response_text})
-                if exec_result.get("error"):
-                    print(f"Ошибка выполнения: {exec_result['error']}")
-                    break
+                # Сначала выполняем обычные команды (если есть)
+                exec_stdout = ""
+                if _has_non_question_commands(response_text):
+                    exec_result = post("/execute", {"raw": response_text})
+                    if exec_result.get("error"):
+                        print(f"Ошибка выполнения: {exec_result['error']}")
+                        break
+                    exec_stdout = exec_result.get("stdout", "")
 
-                stdout = exec_result.get("stdout", "")
-                if stdout and stdout.strip():
-                    current_text = stdout
+                # Потом обрабатываем QUESTIONS (если есть)
+                questions_answer = ""
+                if _has_questions(response_text):
+                    questions = _parse_questions(response_text)
+                    if questions:
+                        answers = _ask_questions(questions)
+                        questions_answer = _build_questions_answer(answers)
+
+                # Объединяем результаты
+                parts = []
+                if exec_stdout and exec_stdout.strip():
+                    parts.append(exec_stdout.strip())
+                if questions_answer:
+                    parts.append(questions_answer)
+
+                if parts:
+                    current_text = "\n\n".join(parts)
                     continue
                 break
     finally:

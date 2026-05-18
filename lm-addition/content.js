@@ -97,7 +97,7 @@ async function log(msg) {
 
 const KNOWN_COMMANDS = [
   "FILELIST", "READFILE", "WRITEFILE", "APPENDFILE",
-  "DELETEFILE", "RUN", "SEARCH", "EDITLINES", "EDIT",
+  "DELETEFILE", "RUN", "SEARCH", "EDITLINES", "EDIT", "QUESTIONS",
 ];
 
 const COMMAND_RE = new RegExp(
@@ -124,6 +124,9 @@ function isCommandComplete(raw, name) {
       raw.includes("NEW_START") &&
       raw.includes("NEW_END")
     );
+  }
+  if (name === "QUESTIONS") {
+    return raw.includes("QUESTIONS_END");
   }
   return raw.includes(")");
 }
@@ -152,6 +155,10 @@ function extractCommand(text) {
     } else if (name === "EDIT") {
       const idx = text.indexOf("NEW_END", startIdx);
       if (idx !== -1) endIdx = idx + "NEW_END".length;
+      else continue;
+    } else if (name === "QUESTIONS") {
+      const idx = text.indexOf("QUESTIONS_END", startIdx);
+      if (idx !== -1) endIdx = idx + "QUESTIONS_END".length;
       else continue;
     } else {
       const idx = text.indexOf(")", startIdx);
