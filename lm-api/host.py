@@ -24,6 +24,10 @@ _addition_lock = threading.Lock()
 _addition_last_heartbeat = 0.0  # time.time() последнего heartbeat
 _ADDITION_ALIVE_TIMEOUT = 10  # секунд без heartbeat = не готово
 
+# --- New chat state ---
+_new_chat_pending = False
+_new_chat_done = None   # bool or None
+
 # --- Model search/select state ---
 _model_search_query = None      # str: запрос от CLI, ждёт расширения
 _model_search_results = None    # list[str]: результаты от расширения, ждут CLI
@@ -116,6 +120,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "last_heartbeat": last,
                 "elapsed": round(elapsed, 1),
             })
+        elif path == "/pending_new_chat":
+            global _new_chat_pending
+            with _queue_changed:
+                pending = _new_chat_pending
+                if pending:
+                    _new_chat_pending = False
+            self._send_json(200, {"pending": pending})
+        elif path == "/pending_new_chat_done":
+            global _new_chat_done
+            timeout_seconds = self._parse_timeout(query)
+            with _queue_changed:
+                if _new_chat_done is None and timeout_seconds > 0:
+                    _queue_changed.wait(timeout_seconds)
+                done = _new_chat_done
+                if done is not None:
+                    _new_chat_done = None
+            if done is not None:
+                self._send_json(200, {"pending": True, "success": done})
+            else:
+                self._send_json(200, {"pending": False})
         elif path == "/pending_model_search":
             # Расширение забирает поисковый запрос (без ожидания, опрос каждые 2с)
             global _model_search_query
@@ -240,6 +264,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True})
         elif self.path == "/filter":
             self._handle_filter(payload)
+        elif self.path == "/new_chat":
+            global _new_chat_pending, _new_chat_done
+            with _queue_changed:
+                _new_chat_pending = True
+                _new_chat_done = None
+                _queue_changed.notify_all()
+            print("[lm-api] new_chat queued")
+            self._send_json(200, {"ok": True})
+        elif self.path == "/new_chat_done":
+            success = bool(payload.get("success", True))
+            with _queue_changed:
+                _new_chat_done = success
+                _queue_changed.notify_all()
+            print(f"[lm-api] new_chat_done: success={success}")
+            self._send_json(200, {"ok": True})
         elif self.path == "/model_search":
             # CLI запрашивает поиск модели
             global _model_search_query, _model_search_results, _model_select_req, _model_select_done

@@ -462,6 +462,45 @@ const PRESETS = {
       log(`highlightResponse: found=${found}, sent=${sent}`);
     },
 
+    async newChat() {
+      const getLink = () => {
+        const link = document.querySelector('a[href="/text/direct"]');
+        return link && link.offsetParent !== null ? link : null;
+      };
+
+      // Ссылка уже видна (десктоп)
+      let link = getLink();
+      if (link) {
+        link.click();
+        log("newChat: clicked New Chat link (desktop)");
+        return true;
+      }
+
+      // Мобильный адаптив: открываем сайдбар
+      const sidebarBtn = document.querySelector('button[aria-label="Open sidebar"]');
+      if (sidebarBtn) {
+        sidebarBtn.click();
+        log("newChat: clicked Open sidebar button");
+        // Ждём появления ссылки
+        for (let i = 0; i < 20; i++) {
+          await new Promise(r => setTimeout(r, 100));
+          link = getLink();
+          if (link) break;
+        }
+      }
+
+      if (link) {
+        link.click();
+        log("newChat: clicked New Chat link (mobile)");
+        return true;
+      }
+
+      // Последний fallback: прямая навигация
+      log("newChat: link not found, navigating directly");
+      window.location.href = "/text/direct";
+      return true;
+    },
+
     // --- Model search/select ---
 
     _modeNames: new Set([
@@ -1042,6 +1081,23 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
   if (msg.type === "STOP_RETRY") {
     stopRetry();
+  }
+  if (msg.type === "NEW_CHAT") {
+    if (!isEnabled || !preset || typeof preset.newChat !== "function") {
+      log("NEW_CHAT ignored (disabled or preset doesn't support it)");
+      try { chrome.runtime.sendMessage({ type: "NEW_CHAT_DONE", success: false }); } catch (e) {}
+      return;
+    }
+    log("NEW_CHAT: executing");
+    (async () => {
+      try {
+        const ok = await preset.newChat();
+        chrome.runtime.sendMessage({ type: "NEW_CHAT_DONE", success: ok });
+      } catch (e) {
+        log("NEW_CHAT error: " + e);
+        try { chrome.runtime.sendMessage({ type: "NEW_CHAT_DONE", success: false }); } catch (e2) {}
+      }
+    })();
   }
   if (msg.type === "MODEL_SEARCH") {
     if (!isEnabled || !preset || typeof preset.searchModels !== "function") {

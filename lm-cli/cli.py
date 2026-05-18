@@ -569,6 +569,7 @@ def cmd_help():
     print("Доступные команды:")
     print("  /ai/send_protocol      — отправить содержимое send_protocol.txt в AI")
     print("  /ai/send_status        — отправить информацию о системе и времени в AI")
+    print("  /ai/new_chat            — создать новый чат на arena.ai")
     print("  /ai/model/swap <запрос> — переключить модель по поисковому запросу")
     print("  /checkrain/on          — включить checkrain")
     print("  /checkrain/off         — выключить checkrain")
@@ -586,6 +587,31 @@ def cmd_checkrain_on():
 def cmd_checkrain_off():
     _save_config({"checkrain": False})
     print("Checkrain выключен.")
+    return None
+
+
+def cmd_new_chat():
+    if not _is_addition_ready():
+        print("ОШИБКА: Addition (расширение) не подключено или отключено.")
+        return None
+
+    result = post("/new_chat", {})
+    if result.get("error"):
+        print(f"Ошибка: {result['error']}")
+        return None
+
+    for _ in range(3):
+        data = get("/pending_new_chat_done?timeout=7")
+        if data.get("error"):
+            continue
+        if data.get("pending"):
+            if data.get("success", True):
+                print("Новый чат создан.")
+            else:
+                print("Не удалось создать новый чат.")
+            return None
+
+    print("Таймаут: расширение не ответило.")
     return None
 
 
@@ -680,6 +706,7 @@ def cmd_model_swap(query=""):
 COMMANDS = {
     ("ai", "send_protocol"): cmd_ai_sendprotocol,
     ("ai", "send_status"): cmd_ai_sendstatus,
+    ("ai", "new_chat"): cmd_new_chat,
     ("ai", "model", "swap"): cmd_model_swap,
     ("checkrain", "on"): cmd_checkrain_on,
     ("checkrain", "off"): cmd_checkrain_off,

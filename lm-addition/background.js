@@ -104,6 +104,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true;
   }
+  if (msg.type === "NEW_CHAT_DONE") {
+    (async () => {
+      try {
+        await fetch("http://127.0.0.1:11856/new_chat_done", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ success: msg.success !== false }),
+        });
+        console.log("[bg] NEW_CHAT_DONE forwarded, success:", msg.success);
+      } catch (err) {
+        console.error("[bg] NEW_CHAT_DONE forward failed:", err);
+      }
+    })();
+    return true;
+  }
   if (msg.type === "MODEL_SEARCH_RESULTS") {
     (async () => {
       try {
@@ -205,13 +220,14 @@ async function pollInject() {
 
       if (!sent) {
         console.log("[bg] no capable ports, trying tabs.sendMessage fallback");
-        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tabs = await chrome.tabs.query({});
         for (const tab of tabs) {
           if (!_isSupportedUrl(tab.url || "")) continue;
           try {
             await chrome.tabs.sendMessage(tab.id, { type: "INJECT", text: data.text });
             console.log("[bg] INJECT sent to tab", tab.id, "via sendMessage");
             sent = true;
+            break;
           } catch (e) {
             console.error("[bg] sendMessage to tab", tab.id, "failed:", e);
           }
@@ -257,6 +273,31 @@ async function _sendToContent(msg) {
     }
   }
   return false;
+}
+
+async function pollNewChat() {
+  try {
+    const cfg = await chrome.storage.local.get("enabled");
+    if (!cfg.enabled) return;
+
+    const resp = await fetch("http://127.0.0.1:11856/pending_new_chat");
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (!data.pending) return;
+
+    console.log("[bg] new_chat request received");
+    const sent = await _sendToContent({ type: "NEW_CHAT" });
+    if (!sent) {
+      console.warn("[bg] NEW_CHAT: no content tab found");
+      await fetch("http://127.0.0.1:11856/new_chat_done", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ success: false }),
+      });
+    }
+  } catch (e) {
+    console.error("[bg] pollNewChat failed:", e);
+  }
 }
 
 async function pollModelSearch() {
@@ -312,6 +353,7 @@ async function pollModelSelect() {
 function schedulePoll() {
   setTimeout(async () => {
     await pollInject();
+    await pollNewChat();
     await pollModelSearch();
     await pollModelSelect();
     schedulePoll();
