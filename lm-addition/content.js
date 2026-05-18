@@ -27,7 +27,12 @@ function connectPort() {
         const mode = getSiteMode();
         if (mode !== null && mode !== "Direct") {
           log(`INJECT blocked: mode="${mode}", not Direct`);
-          sendAiResponse("Выберите режим Direct в браузере для корректной работы", "");
+          sendAiResponse("Выберите режим Direct в браузере для корректной работы", "__system_error__");
+          return;
+        }
+        if (!preset || !preset.host) {
+          log("INJECT blocked: no matching preset for this page");
+          sendAiResponse("Пресет не загружен: откройте поддерживаемый сайт (arena.ai) в браузере", "__system_error__");
           return;
         }
         noteInjectForSiteError();
@@ -457,6 +462,168 @@ const PRESETS = {
       log(`highlightResponse: found=${found}, sent=${sent}`);
     },
 
+    // --- Model search/select ---
+
+    _modeNames: new Set([
+      "Direct", "Battle", "Side-by-side", "Compare",
+      "Прямой", "Прямой режим", "Сравнение", "Бой", "Битва",
+    ]),
+
+    _modelHints: [
+      "claude", "gpt", "gemini", "kimi", "grok", "llama", "qwen",
+      "deepseek", "sonnet", "opus", "haiku", "mistral", "command-r",
+      "yi-", "phi-", "nemo", "gemma", "o1", "o3", "o4", "glm",
+    ],
+
+    _looksLikeModelName(text) {
+      const lower = (text || "").trim().toLowerCase();
+      if (!lower) return false;
+      if (this._modeNames.has(text.trim())) return false;
+      for (const hint of this._modelHints) {
+        if (lower.includes(hint)) return true;
+      }
+      return /[a-z]+-[a-z0-9]+(?:-[a-z0-9.]+)+/.test(lower);
+    },
+
+    _findModelSelector() {
+      const dialogBtns = Array.from(document.querySelectorAll('button[aria-haspopup="dialog"]'));
+      for (const btn of dialogBtns) {
+        if (btn.offsetParent === null) continue;
+        const text = this._getModelBtnName(btn);
+        if (this._looksLikeModelName(text)) return btn;
+      }
+      const comboBtns = Array.from(document.querySelectorAll('button[role="combobox"]'));
+      for (const btn of comboBtns) {
+        if (btn.offsetParent === null) continue;
+        const text = this._getModelBtnName(btn);
+        if (this._modeNames.has(text)) continue;
+        if (this._looksLikeModelName(text)) return btn;
+      }
+      for (const btn of dialogBtns) {
+        if (btn.offsetParent === null) continue;
+        const text = this._getModelBtnName(btn);
+        if (this._modeNames.has(text)) continue;
+        if (text && text.length > 0) return btn;
+      }
+      return null;
+    },
+
+    _getModelBtnName(btn) {
+      const span =
+        btn.querySelector("span.flex-1.truncate") ||
+        btn.querySelector("span.truncate.font-mono") ||
+        btn.querySelector("span.truncate") ||
+        btn.querySelector("p");
+      return ((span ? span.textContent : btn.textContent) || "").trim();
+    },
+
+    _getOptionName(opt) {
+      const v = opt.getAttribute("data-value");
+      if (v) return v.trim();
+      const span =
+        opt.querySelector("span.truncate.font-mono") ||
+        opt.querySelector("span.truncate") ||
+        opt.querySelector("span");
+      return ((span ? span.textContent : opt.textContent) || "").trim();
+    },
+
+    async _openPickerAndSearch(query) {
+      const selector = this._findModelSelector();
+      if (!selector) {
+        log("_openPickerAndSearch: model selector not found");
+        return null;
+      }
+      try { selector.click(); } catch (e) {
+        log("_openPickerAndSearch: click failed: " + e);
+        return null;
+      }
+
+      // Ждём появления диалога
+      let dialog = null;
+      for (let i = 0; i < 40; i++) {
+        await new Promise(r => setTimeout(r, 100));
+        dialog = document.querySelector('[role="dialog"][data-state="open"]');
+        if (dialog) break;
+      }
+
+      // Если есть строка поиска — вводим запрос
+      if (query && dialog) {
+        const input =
+          dialog.querySelector('[cmdk-input]') ||
+          dialog.querySelector('input[type="search"]') ||
+          dialog.querySelector('input[type="text"]') ||
+          dialog.querySelector('input');
+        if (input) {
+          input.focus();
+          const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          nativeSetter.call(input, query);
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          await new Promise(r => setTimeout(r, 600));
+          log("_openPickerAndSearch: typed query: " + query);
+        } else {
+          log("_openPickerAndSearch: no search input found, returning all options");
+        }
+      }
+
+      // Собираем видимые опции
+      let options = Array.from(
+        document.querySelectorAll('[role="option"][data-value]')
+      ).filter(el => el.offsetParent !== null);
+      if (options.length === 0) {
+        options = Array.from(
+          document.querySelectorAll('[role="option"]')
+        ).filter(el => el.offsetParent !== null);
+      }
+      return options;
+    },
+
+    async searchModels(query) {
+      const options = await this._openPickerAndSearch(query);
+      // Закрываем диалог
+      try {
+        document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      } catch (e) {}
+      await new Promise(r => setTimeout(r, 150));
+
+      if (!options || options.length === 0) {
+        log("searchModels: no options found");
+        return [];
+      }
+      const names = options.map(o => this._getOptionName(o)).filter(Boolean);
+      log("searchModels: found " + names.length + " models: " + names.join(", "));
+      return names;
+    },
+
+    async selectModelByIndex(query, index) {
+      const options = await this._openPickerAndSearch(query);
+
+      if (!options || options.length === 0) {
+        try { document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); } catch (e) {}
+        log("selectModelByIndex: no options after search");
+        return false;
+      }
+      if (index < 0 || index >= options.length) {
+        try { document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); } catch (e) {}
+        log("selectModelByIndex: index " + index + " out of range (" + options.length + " options)");
+        return false;
+      }
+
+      try {
+        options[index].click();
+        await new Promise(r => setTimeout(r, 100));
+        // Закрываем если диалог остался открытым
+        const dialog = document.querySelector('[role="dialog"][data-state="open"]');
+        if (dialog) {
+          document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        }
+        log("selectModelByIndex: clicked option " + index + " (" + this._getOptionName(options[index]) + ")");
+        return true;
+      } catch (e) {
+        log("selectModelByIndex: click failed: " + e);
+        return false;
+      }
+    },
 
   },
 
@@ -856,7 +1023,12 @@ chrome.runtime.onMessage.addListener((msg) => {
     const mode = getSiteMode();
     if (mode !== null && mode !== "Direct") {
       log(`INJECT blocked: mode="${mode}", not Direct`);
-      sendAiResponse("Выберите режим Direct в браузере для корректной работы", "");
+      sendAiResponse("Выберите режим Direct в браузере для корректной работы", "__system_error__");
+      return;
+    }
+    if (!preset || !preset.host) {
+      log("INJECT blocked: no matching preset for this page");
+      sendAiResponse("Пресет не загружен: откройте поддерживаемый сайт (arena.ai) в браузере", "__system_error__");
       return;
     }
     noteInjectForSiteError();
@@ -870,6 +1042,40 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
   if (msg.type === "STOP_RETRY") {
     stopRetry();
+  }
+  if (msg.type === "MODEL_SEARCH") {
+    if (!isEnabled || !preset || typeof preset.searchModels !== "function") {
+      log("MODEL_SEARCH ignored (disabled or preset doesn't support it)");
+      try { chrome.runtime.sendMessage({ type: "MODEL_SEARCH_RESULTS", models: [] }); } catch (e) {}
+      return;
+    }
+    log("MODEL_SEARCH: query=" + msg.query);
+    (async () => {
+      try {
+        const models = await preset.searchModels(msg.query || "");
+        chrome.runtime.sendMessage({ type: "MODEL_SEARCH_RESULTS", models });
+      } catch (e) {
+        log("MODEL_SEARCH error: " + e);
+        try { chrome.runtime.sendMessage({ type: "MODEL_SEARCH_RESULTS", models: [] }); } catch (e2) {}
+      }
+    })();
+  }
+  if (msg.type === "MODEL_SELECT") {
+    if (!isEnabled || !preset || typeof preset.selectModelByIndex !== "function") {
+      log("MODEL_SELECT ignored (disabled or preset doesn't support it)");
+      try { chrome.runtime.sendMessage({ type: "MODEL_SELECT_DONE", success: false }); } catch (e) {}
+      return;
+    }
+    log("MODEL_SELECT: query=" + msg.query + " index=" + msg.index);
+    (async () => {
+      try {
+        const ok = await preset.selectModelByIndex(msg.query || "", msg.index || 0);
+        chrome.runtime.sendMessage({ type: "MODEL_SELECT_DONE", success: ok });
+      } catch (e) {
+        log("MODEL_SELECT error: " + e);
+        try { chrome.runtime.sendMessage({ type: "MODEL_SELECT_DONE", success: false }); } catch (e2) {}
+      }
+    })();
   }
 });
 

@@ -567,12 +567,13 @@ def cmd_clear():
 
 def cmd_help():
     print("Доступные команды:")
-    print("  /ai/send_protocol  — отправить содержимое send_protocol.txt в AI")
-    print("  /ai/send_status    — отправить информацию о системе и времени в AI")
-    print("  /checkrain/on      — включить checkrain")
-    print("  /checkrain/off     — выключить checkrain")
-    print("  /clear             — очистить консоль")
-    print("  /help              — показать это сообщение")
+    print("  /ai/send_protocol      — отправить содержимое send_protocol.txt в AI")
+    print("  /ai/send_status        — отправить информацию о системе и времени в AI")
+    print("  /ai/model/swap <запрос> — переключить модель по поисковому запросу")
+    print("  /checkrain/on          — включить checkrain")
+    print("  /checkrain/off         — выключить checkrain")
+    print("  /clear                 — очистить консоль")
+    print("  /help                  — показать это сообщение")
     return None
 
 
@@ -588,9 +589,98 @@ def cmd_checkrain_off():
     return None
 
 
+def cmd_model_swap(query=""):
+    query = query.strip() if query else ""
+    if not query:
+        print("Использование: /model/swap <запрос>  (например: /model/swap claude)")
+        return None
+
+    if not _is_addition_ready():
+        print("ОШИБКА: Addition (расширение) не подключено или отключено.")
+        return None
+
+    # Отправляем запрос на поиск
+    result = post("/model_search", {"query": query})
+    if result.get("error"):
+        print(f"Ошибка: {result['error']}")
+        return None
+
+    print(f"Ищу модель: {query}...")
+
+    # Ждём результатов (расширение делает поиск и возвращает список)
+    models = None
+    for _ in range(3):
+        data = get(f"/pending_model_results?timeout=7")
+        if data.get("error"):
+            continue
+        if data.get("pending"):
+            models = data.get("models", [])
+            break
+
+    if models is None:
+        print("Таймаут: расширение не вернуло результаты поиска.")
+        return None
+
+    if not models:
+        print(f"Модели по запросу '{query}' не найдены.")
+        return None
+
+    # Определяем какую модель выбрать
+    if len(models) == 1:
+        index = 0
+        chosen = models[0]
+    else:
+        print(f"\nНайдено моделей: {len(models)}")
+        for i, m in enumerate(models):
+            print(f"  {i + 1}. {m}")
+        print()
+        valid = set(range(1, len(models) + 1))
+        while True:
+            try:
+                raw = input("> ").strip()
+            except EOFError:
+                raw = ""
+            if not raw:
+                print("Введите номер модели.")
+                continue
+            try:
+                choice = int(raw)
+            except ValueError:
+                print("Введите число.")
+                continue
+            if choice not in valid:
+                print(f"Нет пункта {choice}. Допустимые: {', '.join(str(n) for n in sorted(valid))}")
+                continue
+            index = choice - 1
+            chosen = models[index]
+            break
+
+    # Отправляем выбор расширению
+    result = post("/model_select", {"query": query, "index": index})
+    if result.get("error"):
+        print(f"Ошибка выбора: {result['error']}")
+        return None
+
+    # Ждём подтверждения
+    for _ in range(3):
+        data = get(f"/pending_model_select_done?timeout=7")
+        if data.get("error"):
+            continue
+        if data.get("pending"):
+            if data.get("success", True):
+                print(f"Модель выбрана: {chosen}")
+            else:
+                print(f"Не удалось выбрать модель '{chosen}'. Попробуй ещё раз.")
+            return None
+
+    print("Таймаут: расширение не подтвердило выбор модели.")
+    return None
+
+
 COMMANDS = {
     ("ai", "send_protocol"): cmd_ai_sendprotocol,
     ("ai", "send_status"): cmd_ai_sendstatus,
+    ("ai", "model", "swap"): cmd_model_swap,
     ("checkrain", "on"): cmd_checkrain_on,
     ("checkrain", "off"): cmd_checkrain_off,
     ("clear",): cmd_clear,
@@ -607,6 +697,20 @@ def handle_cli_command(text):
 
     key = tuple(parts)
     handler = COMMANDS.get(key)
+
+    # Команды с аргументом: последняя часть может содержать "команда аргумент"
+    # Пример: /model/swap claude → parts=["model","swap claude"]
+    if handler is None and parts:
+        last = parts[-1]
+        sp = last.find(" ")
+        if sp != -1:
+            cmd_part = last[:sp]
+            arg = last[sp + 1:].strip()
+            alt_key = tuple(parts[:-1] + [cmd_part])
+            alt_handler = COMMANDS.get(alt_key)
+            if alt_handler is not None:
+                return alt_handler(arg)
+
     if handler is None:
         print(f"Ошибка: неизвестная команда: /{'/'.join(parts)}")
         print("Используй /help для списка команд.")
@@ -675,6 +779,10 @@ def main():
                 if not ok:
                     post("/cancel_inject", {})
                     print("\nЗапрос отменён (Ctrl+P).")
+                    break
+
+                if model == "__system_error__":
+                    print(f"ОШИБКА: {response_text}")
                     break
 
                 filtered = filter_commands(response_text)

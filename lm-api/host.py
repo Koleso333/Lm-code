@@ -24,6 +24,12 @@ _addition_lock = threading.Lock()
 _addition_last_heartbeat = 0.0  # time.time() последнего heartbeat
 _ADDITION_ALIVE_TIMEOUT = 10  # секунд без heartbeat = не готово
 
+# --- Model search/select state ---
+_model_search_query = None      # str: запрос от CLI, ждёт расширения
+_model_search_results = None    # list[str]: результаты от расширения, ждут CLI
+_model_select_req = None        # dict{query,index}: от CLI, ждёт расширения
+_model_select_done = None       # bool: результат выбора, ждёт CLI
+
 
 def _pop_pending(queue_name, timeout_seconds=0):
     queue = _inject_queue if queue_name == "inject" else _response_queue
@@ -110,6 +116,56 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "last_heartbeat": last,
                 "elapsed": round(elapsed, 1),
             })
+        elif path == "/pending_model_search":
+            # Расширение забирает поисковый запрос (без ожидания, опрос каждые 2с)
+            global _model_search_query
+            with _queue_changed:
+                q = _model_search_query
+                if q is not None:
+                    _model_search_query = None
+            if q is not None:
+                self._send_json(200, {"pending": True, "query": q})
+            else:
+                self._send_json(200, {"pending": False})
+        elif path == "/pending_model_results":
+            # CLI ждёт результатов поиска от расширения
+            global _model_search_results
+            timeout_seconds = self._parse_timeout(query)
+            with _queue_changed:
+                if _model_search_results is None and timeout_seconds > 0:
+                    _queue_changed.wait(timeout_seconds)
+                results = _model_search_results
+                if results is not None:
+                    _model_search_results = None
+            if results is not None:
+                self._send_json(200, {"pending": True, "models": results})
+            else:
+                self._send_json(200, {"pending": False})
+        elif path == "/pending_model_select":
+            # Расширение забирает запрос на выбор модели
+            global _model_select_req
+            with _queue_changed:
+                req = _model_select_req
+                if req is not None:
+                    _model_select_req = None
+            if req is not None:
+                self._send_json(200, {"pending": True, "query": req["query"], "index": req["index"]})
+            else:
+                self._send_json(200, {"pending": False})
+        elif path == "/pending_model_select_done":
+            # CLI ждёт подтверждения выбора от расширения
+            global _model_select_done
+            timeout_seconds = self._parse_timeout(query)
+            with _queue_changed:
+                if _model_select_done is None and timeout_seconds > 0:
+                    _queue_changed.wait(timeout_seconds)
+                done = _model_select_done
+                if done is not None:
+                    _model_select_done = None
+            if done is not None:
+                self._send_json(200, {"pending": True, "success": done})
+            else:
+                self._send_json(200, {"pending": False})
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -184,6 +240,42 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True})
         elif self.path == "/filter":
             self._handle_filter(payload)
+        elif self.path == "/model_search":
+            # CLI запрашивает поиск модели
+            global _model_search_query, _model_search_results, _model_select_req, _model_select_done
+            query = payload.get("query", "").strip()
+            with _queue_changed:
+                _model_search_query = query
+                _model_search_results = None
+                _queue_changed.notify_all()
+            print(f"[lm-api] model_search queued: {query!r}")
+            self._send_json(200, {"ok": True})
+        elif self.path == "/model_search_results":
+            # Расширение возвращает найденные модели
+            models = payload.get("models", [])
+            with _queue_changed:
+                _model_search_results = models
+                _queue_changed.notify_all()
+            print(f"[lm-api] model_search_results: {len(models)} models")
+            self._send_json(200, {"ok": True})
+        elif self.path == "/model_select":
+            # CLI отправляет выбранный индекс
+            query = payload.get("query", "")
+            index = int(payload.get("index", 0))
+            with _queue_changed:
+                _model_select_req = {"query": query, "index": index}
+                _model_select_done = None
+                _queue_changed.notify_all()
+            print(f"[lm-api] model_select queued: query={query!r} index={index}")
+            self._send_json(200, {"ok": True})
+        elif self.path == "/model_select_done":
+            # Расширение подтверждает выбор
+            success = bool(payload.get("success", True))
+            with _queue_changed:
+                _model_select_done = success
+                _queue_changed.notify_all()
+            print(f"[lm-api] model_select_done: success={success}")
+            self._send_json(200, {"ok": True})
         else:
             self._send_json(404, {"error": "not found"})
 

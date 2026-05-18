@@ -77,6 +77,9 @@ def main() -> None:
             _emit(output)
             continue
 
+        if cmd.name == "QUESTIONS":
+            continue
+
         handler = DISPATCH.get(cmd.name)
         if handler is None:
             output = build_error({

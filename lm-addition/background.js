@@ -104,6 +104,36 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true;
   }
+  if (msg.type === "MODEL_SEARCH_RESULTS") {
+    (async () => {
+      try {
+        await fetch("http://127.0.0.1:11856/model_search_results", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ models: msg.models || [] }),
+        });
+        console.log("[bg] MODEL_SEARCH_RESULTS forwarded:", (msg.models || []).length, "models");
+      } catch (err) {
+        console.error("[bg] MODEL_SEARCH_RESULTS forward failed:", err);
+      }
+    })();
+    return true;
+  }
+  if (msg.type === "MODEL_SELECT_DONE") {
+    (async () => {
+      try {
+        await fetch("http://127.0.0.1:11856/model_select_done", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ success: msg.success !== false }),
+        });
+        console.log("[bg] MODEL_SELECT_DONE forwarded, success:", msg.success);
+      } catch (err) {
+        console.error("[bg] MODEL_SELECT_DONE forward failed:", err);
+      }
+    })();
+    return true;
+  }
 });
 
 async function handleCommand(raw) {
@@ -117,6 +147,10 @@ async function handleCommand(raw) {
   }
   await chrome.storage.local.set({ lm_last_request: Date.now() });
   await resp.json();
+}
+
+function _isSupportedUrl(url) {
+  return /arena\.ai/.test(url);
 }
 
 async function pollInject() {
@@ -151,7 +185,14 @@ async function pollInject() {
     if (data.pending) {
       console.log("[bg] inject found, sending to", _ports.size, "ports");
       let sent = false;
+
+      // Отправляем только на вкладки с поддерживаемым сайтом (arena.ai)
       for (const [tabId, port] of _ports.entries()) {
+        const url = port.sender?.tab?.url || "";
+        if (!_isSupportedUrl(url)) {
+          console.log("[bg] INJECT: skipping tab", tabId, "(unsupported URL)");
+          continue;
+        }
         try {
           port.postMessage({ type: "INJECT", text: data.text });
           console.log("[bg] INJECT sent to tab", tabId, "via port");
@@ -161,10 +202,12 @@ async function pollInject() {
           _ports.delete(tabId);
         }
       }
+
       if (!sent) {
-        console.log("[bg] no ports, trying tabs.sendMessage fallback");
+        console.log("[bg] no capable ports, trying tabs.sendMessage fallback");
         const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
         for (const tab of tabs) {
+          if (!_isSupportedUrl(tab.url || "")) continue;
           try {
             await chrome.tabs.sendMessage(tab.id, { type: "INJECT", text: data.text });
             console.log("[bg] INJECT sent to tab", tab.id, "via sendMessage");
@@ -174,8 +217,22 @@ async function pollInject() {
           }
         }
       }
+
       if (!sent) {
-        console.warn("[bg] INJECT could not be delivered to any tab");
+        // Нет ни одной подходящей вкладки — сразу сообщаем ошибку в CLI
+        console.warn("[bg] INJECT: no capable tab found, reporting preset error");
+        try {
+          await fetch("http://127.0.0.1:11856/ai_response", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              text: "Пресет не загружен: откройте arena.ai в браузере",
+              model: "__system_error__",
+            }),
+          });
+        } catch (e) {
+          console.error("[bg] preset error report failed:", e);
+        }
       }
     }
   } catch (e) {
@@ -183,9 +240,80 @@ async function pollInject() {
   }
 }
 
+async function _sendToContent(msg) {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  for (const tab of tabs) {
+    try {
+      await chrome.tabs.sendMessage(tab.id, msg);
+      return true;
+    } catch (e) {}
+  }
+  for (const [tabId, port] of _ports.entries()) {
+    try {
+      port.postMessage(msg);
+      return true;
+    } catch (e) {
+      _ports.delete(tabId);
+    }
+  }
+  return false;
+}
+
+async function pollModelSearch() {
+  try {
+    const cfg = await chrome.storage.local.get("enabled");
+    if (!cfg.enabled) return;
+
+    const resp = await fetch("http://127.0.0.1:11856/pending_model_search");
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (!data.pending) return;
+
+    console.log("[bg] model search query:", data.query);
+    const sent = await _sendToContent({ type: "MODEL_SEARCH", query: data.query });
+    if (!sent) {
+      console.warn("[bg] MODEL_SEARCH: no content tab found, reporting empty results");
+      await fetch("http://127.0.0.1:11856/model_search_results", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ models: [] }),
+      });
+    }
+  } catch (e) {
+    console.error("[bg] pollModelSearch failed:", e);
+  }
+}
+
+async function pollModelSelect() {
+  try {
+    const cfg = await chrome.storage.local.get("enabled");
+    if (!cfg.enabled) return;
+
+    const resp = await fetch("http://127.0.0.1:11856/pending_model_select");
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (!data.pending) return;
+
+    console.log("[bg] model select: query=", data.query, "index=", data.index);
+    const sent = await _sendToContent({ type: "MODEL_SELECT", query: data.query, index: data.index });
+    if (!sent) {
+      console.warn("[bg] MODEL_SELECT: no content tab found, reporting failure");
+      await fetch("http://127.0.0.1:11856/model_select_done", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ success: false }),
+      });
+    }
+  } catch (e) {
+    console.error("[bg] pollModelSelect failed:", e);
+  }
+}
+
 function schedulePoll() {
   setTimeout(async () => {
     await pollInject();
+    await pollModelSearch();
+    await pollModelSelect();
     schedulePoll();
   }, 2000);
 }
