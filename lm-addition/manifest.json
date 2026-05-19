@@ -1,12 +1,23 @@
 {
   "manifest_version": 3,
   "name": "lm-addition",
-  "version": "1.0.0",
-  "description": "Автоматически находит команды lm-api на страницах и выполняет их",
+  "version": "1.1",
+  "description": "Дополнение необходимо для работы Lm-Code, нужно для парсинга и инжекта в страницу arena.ai",
   "permissions": ["storage", "activeTab", "alarms"],
   "host_permissions": ["<all_urls>", "http://127.0.0.1:11856/*"],
+  "icons": {
+    "16": "assets/lm-code-logo-white.png",
+    "32": "assets/lm-code-logo-white.png",
+    "48": "assets/lm-code-logo-white.png",
+    "128": "assets/lm-code-logo-white.png"
+  },
   "action": {
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "assets/lm-code-logo-white.png",
+      "32": "assets/lm-code-logo-white.png",
+      "48": "assets/lm-code-logo-white.png"
+    }
   },
   "background": {
     "service_worker": "background.js"

@@ -14,7 +14,7 @@
     body {
       width: 320px;
       min-height: 280px;
-      background: #0e0e10;
+      background: #252523;
       color: #e0e0e0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       display: flex;
@@ -36,14 +36,14 @@
 
     .status-line {
       font-size: 12px;
-      color: #6b6b7b;
+      color: #85806f;
       margin-bottom: 4px;
       text-align: center;
     }
 
     .timing-line {
       font-size: 10px;
-      color: #4a4a58;
+      color: #57534a;
       margin-bottom: 32px;
       text-align: center;
     }
@@ -59,20 +59,20 @@
       position: absolute;
       inset: 0;
       border-radius: 50%;
-      border: 2.5px solid #2a2a35;
+      border: 2.5px solid #3a3933;
       transition: border-color 0.5s ease, box-shadow 0.5s ease;
     }
 
     .power-ring.active {
-      border-color: #6c5ce7;
-      box-shadow: 0 0 24px rgba(108, 92, 231, 0.3), inset 0 0 12px rgba(108, 92, 231, 0.1);
+      border-color: #c7c2bc;
+      box-shadow: 0 0 24px rgba(199, 194, 188, 0.3), inset 0 0 12px rgba(199, 194, 188, 0.1);
     }
 
     .power-glow {
       position: absolute;
       inset: -8px;
       border-radius: 50%;
-      background: radial-gradient(circle, rgba(108, 92, 231, 0.15) 0%, transparent 70%);
+      background: radial-gradient(circle, rgba(199, 194, 188, 0.15) 0%, transparent 70%);
       opacity: 0;
       transition: opacity 0.5s ease;
     }
@@ -92,7 +92,7 @@
       inset: 4px;
       border-radius: 50%;
       border: none;
-      background: #1a1a24;
+      background: #1e1e1c;
       cursor: pointer;
       display: flex;
       align-items: center;
@@ -102,7 +102,7 @@
     }
 
     .power-btn:hover {
-      background: #22222e;
+      background: #2d2d2b;
     }
 
     .power-btn:active {
@@ -116,30 +116,29 @@
     }
 
     .power-btn svg .icon-path {
-      stroke: #4a4a58;
-      transition: stroke 0.4s ease, filter 0.4s ease;
+      stroke: #57534a;
+      transition: stroke 0.4s ease;
     }
 
     .power-btn.active svg .icon-path {
-      stroke: #6c5ce7;
-      filter: drop-shadow(0 0 6px rgba(108, 92, 231, 0.6));
+      stroke: #c7c2bc;
     }
 
     .state-label {
       font-size: 13px;
-      color: #4a4a58;
+      color: #57534a;
       letter-spacing: 1.5px;
       text-transform: uppercase;
       transition: color 0.4s ease;
     }
 
     .state-label.active {
-      color: #6c5ce7;
+      color: #c7c2bc;
     }
   </style>
 </head>
 <body>
-  <h1>lm-addition</h1>
+  <img src="assets/lm-code-white.png" alt="lm-code" style="height:32px; margin-bottom:6px;">
   <div class="status-line" id="presetLine">Пресет: загрузка…</div>
   <div class="timing-line" id="timingLine">—</div>
 
@@ -148,8 +147,8 @@
     <div class="power-ring" id="ring"></div>
     <button class="power-btn" id="powerBtn">
       <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path class="icon-path" d="M12 3v6"/>
-        <path class="icon-path" d="M6.3 7.7A8 8 0 1 0 17.7 7.7"/>
+        <path class="icon-path" d="M18.36 6.64a9 9 0 1 1-12.73 0"/>
+        <line class="icon-path" x1="12" y1="2" x2="12" y2="12"/>
       </svg>
     </button>
   </div>

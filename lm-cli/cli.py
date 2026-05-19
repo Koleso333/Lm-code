@@ -39,6 +39,30 @@ def _set_console_title(title):
         pass
 
 
+def _set_console_icon():
+    try:
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if not hwnd:
+            return
+        icon_png = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "lm-code-logo-white.png")
+        if not os.path.exists(icon_png):
+            return
+        from PIL import Image
+        import tempfile
+        img = Image.open(icon_png).convert("RGBA")
+        ico_path = os.path.join(tempfile.gettempdir(), "lm-code.ico")
+        img.save(ico_path, format="ICO", sizes=[(16, 16), (32, 32), (48, 48)])
+        LR_LOADFROMFILE = 0x0010
+        LR_DEFAULTSIZE = 0x0040
+        hicon_big = ctypes.windll.user32.LoadImageW(None, ico_path, 1, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE)
+        hicon_small = ctypes.windll.user32.LoadImageW(None, ico_path, 1, 16, 16, LR_LOADFROMFILE)
+        WM_SETICON = 0x0080
+        ctypes.windll.user32.SendMessageW(hwnd, WM_SETICON, 1, hicon_big)
+        ctypes.windll.user32.SendMessageW(hwnd, WM_SETICON, 0, hicon_small)
+    except Exception:
+        pass
+
+
 def _is_host_running():
     try:
         req = urllib.request.Request(f"{HOST}/status", method="GET")
@@ -762,6 +786,7 @@ def main():
 
     version = _load_version()
     _set_console_title(f"Lm-code > v{version} > Cli")
+    _set_console_icon()
 
     print(ASCII_ART)
     print("Порт хоста: " + HOST)
